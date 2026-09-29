@@ -7,7 +7,8 @@ __pycache__/
 .venv/
 venv/
 
-# Environment variables — NEVER commit.env
+# Environment variables NEVER commit
+.env
 .env.local
 
 # IDE
