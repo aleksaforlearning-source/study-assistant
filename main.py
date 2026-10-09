@@ -1,11 +1,14 @@
 import hashlib
 from enum import Enum
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 from db import get_connection
 from pdf_parser import parse_pdf
+from topic_extractor import extract_topics
+from build_hierarchy import build_hierarchy
+
 app = FastAPI(title="Study Assistant")
 
 
@@ -105,3 +108,71 @@ def upload_source(
         "weak_chunks": weak_count,
         "status": "processed",
     }
+
+@app.post("/sources/{source_id}/topics")
+def start_topic_extraction(source_id: int, background_tasks: BackgroundTasks):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT subject_id FROM sources WHERE id = %s", (source_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+
+    background_tasks.add_task(extract_topics, source_id)
+
+    return {
+        "source_id": source_id,
+        "status": "started",
+        "note": "takes 2-4 minutes, watch the uvicorn log",
+    }
+
+
+@app.post("/subjects/{subject_id}/hierarchy")
+def rebuild_hierarchy(subject_id: int):
+    stats = build_hierarchy(subject_id)
+
+    if stats.get("status") == "no_topics":
+        raise HTTPException(status_code=400, detail="no topics for this subject yet")
+
+    return stats
+
+
+@app.get("/subjects/{subject_id}/priority")
+def get_priority(subject_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(p.id, t.id) AS root_id, COALESCE(p.title, t.title) AS root_title, "
+                "count(tc.chunk_id) AS chunks "
+                "FROM topics t "
+                "LEFT JOIN topics p ON p.id = t.parent_id "
+                "LEFT JOIN topic_chunks tc ON tc.topic_id = t.id "
+                "WHERE t.subject_id = %s "
+                "GROUP BY COALESCE(p.id, t.id), COALESCE(p.title, t.title) "
+                "ORDER BY chunks DESC",
+                (subject_id,),
+            )
+            branches = [
+                {"topic_id": r[0], "title": r[1], "chunks": r[2]}
+                for r in cur.fetchall()
+            ]
+
+            cur.execute(
+                "SELECT t.parent_id, t.id, t.title, count(tc.chunk_id) AS chunks "
+                "FROM topics t LEFT JOIN topic_chunks tc ON tc.topic_id = t.id "
+                "WHERE t.subject_id = %s AND t.parent_id IS NOT NULL "
+                "GROUP BY t.parent_id, t.id, t.title "
+                "ORDER BY chunks DESC",
+                (subject_id,),
+            )
+            children_rows = cur.fetchall()
+
+    children = {}
+    for parent_id, topic_id, title, chunks in children_rows:
+        children.setdefault(parent_id, []).append(
+            {"topic_id": topic_id, "title": title, "chunks": chunks}
+        )
+
+    for branch in branches:
+        branch["children"] = children.get(branch["topic_id"], [])
+
+    return {"subject_id": subject_id, "branches": branches}

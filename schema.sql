@@ -68,3 +68,4 @@ ALTER TABLE sources ADD COLUMN IF NOT EXISTS content_hash TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS sources_hash_idx ON sources (subject_id, content_hash);
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS is_weak BOOLEAN DEFAULT false;
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS drawings_count INTEGER DEFAULT 0;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS parent_origin TEXT NOT NULL DEFAULT 'ai';
