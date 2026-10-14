@@ -173,6 +173,17 @@ def build_hierarchy(subject_id: int) -> dict:
 
             raw, response = ask_model(titles)
             pairs = resolve_pairs(raw.get("pairs", []), topics, skipped)
+            cur.execute(
+                "UPDATE topics SET parent_id = NULL WHERE subject_id = %s AND parent_origin = 'ai'",
+                (subject_id,),
+            )
+
+            for child_id, parent_id, child_title, parent_title in pairs:
+                cur.execute(
+                    "UPDATE topics SET parent_id = %s WHERE id = %s AND parent_origin = 'ai'",
+                    (parent_id, child_id),
+                )
+                print(f"  {parent_title} → {child_title}")
 
             conn.commit()
 
