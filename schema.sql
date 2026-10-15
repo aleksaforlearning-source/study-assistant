@@ -69,3 +69,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS sources_hash_idx ON sources (subject_id, conte
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS is_weak BOOLEAN DEFAULT false;
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS drawings_count INTEGER DEFAULT 0;
 ALTER TABLE topics ADD COLUMN IF NOT EXISTS parent_origin TEXT NOT NULL DEFAULT 'ai';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(384);
+CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING hnsw (embedding vector_cosine_ops);

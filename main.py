@@ -1,3 +1,8 @@
+import os
+
+from dotenv import load_dotenv
+from groq import Groq
+
 import hashlib
 from enum import Enum
 
@@ -9,7 +14,44 @@ from pdf_parser import parse_pdf
 from topic_extractor import extract_topics
 from build_hierarchy import build_hierarchy
 
+from embedder import embed_source, embed_texts
+
 app = FastAPI(title="Study Assistant")
+
+load_dotenv()
+
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+ASK_MODEL = "openai/gpt-oss-20b"
+
+ASK_SYSTEM_PROMPT = """You help a student understand their own lecture material.
+
+Answer in two clearly separated and labelled parts.
+
+PART 1 — From the lecture:
+- Use only what the fragments say
+- Cite the page after each claim, like [page 29]
+- If the fragments do not answer the question, say so plainly here
+
+PART 2 — My explanation:
+- Explain the same idea in simpler words, with an analogy or a tiny example
+- Never contradict PART 1
+- Never introduce notation or terms the course does not use
+- If you are not confident, say so instead of guessing
+- Keep it to a few sentences
+
+Answer in the same language the question is asked in.
+"""
+
+
+ASK_STRICT_PROMPT = """You answer a student's question using only the lecture fragments provided.
+
+Rules:
+- Use only information from the fragments. If they do not contain the answer, say so plainly.
+- Never add facts that are not in the fragments
+- After each claim, cite the page in square brackets, like [page 29]
+- Answer in the same language the question is asked in
+- Be concise
+"""
 
 
 class SubjectIn(BaseModel):
@@ -24,6 +66,11 @@ class NoteIn(BaseModel):
 class TopicPatch(BaseModel):
     title: str | None = None
     parent_id: int | None = None
+
+class AskIn(BaseModel):
+    question: str
+    limit: int = 5
+    explain: bool = True
 
 
 @app.get("/health")
@@ -120,6 +167,30 @@ def upload_source(
         "status": "processed",
     }
 
+def find_chunks(subject_id: int, query: str, limit: int) -> list[dict]:
+    query_vector = str(embed_texts([query])[0])
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT c.id, c.page_number, c.text, s.filename, "
+                "c.embedding <=> %s::vector AS distance "
+                "FROM chunks c JOIN sources s ON s.id = c.source_id "
+                "WHERE s.subject_id = %s AND c.embedding IS NOT NULL "
+                "ORDER BY c.embedding <=> %s::vector LIMIT %s",
+                (query_vector, subject_id, query_vector, limit),
+            )
+            return [
+                {
+                    "chunk_id": r[0],
+                    "page": r[1],
+                    "text": r[2],
+                    "filename": r[3],
+                    "distance": round(r[4], 4),
+                }
+                for r in cur.fetchall()
+            ]
+        
 @app.post("/sources/{source_id}/topics")
 def start_topic_extraction(source_id: int, background_tasks: BackgroundTasks):
     with get_connection() as conn:
@@ -308,3 +379,72 @@ def update_topic(topic_id: int, patch: TopicPatch):
                 )
 
     return get_topic(topic_id)
+
+@app.post("/sources/{source_id}/embeddings")
+def start_embedding(source_id: int, background_tasks: BackgroundTasks):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM sources WHERE id = %s", (source_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+
+    background_tasks.add_task(embed_source, source_id)
+    return {"source_id": source_id, "status": "started"}
+
+
+@app.get("/subjects/{subject_id}/search")
+def search(subject_id: int, q: str, limit: int = 5):
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="query cannot be empty")
+
+    chunks = find_chunks(subject_id, q, limit)
+
+    for chunk in chunks:
+        chunk["text"] = chunk["text"][:300]
+
+    return {"query": q, "results": chunks}
+
+def build_ask_prompt(question: str, chunks: list[dict]) -> str:
+    fragments = "\n\n".join(
+        f"[page {c['page']}]\n{c['text']}" for c in chunks
+    )
+
+    return f"""Lecture fragments:
+
+{fragments}
+
+Question: {question}"""
+
+
+@app.post("/subjects/{subject_id}/ask")
+def ask(subject_id: int, body: AskIn):
+    question = body.question.strip()
+
+    if not question:
+        raise HTTPException(status_code=400, detail="question cannot be empty")
+
+    chunks = find_chunks(subject_id, question, body.limit)
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail="no material with embeddings for this subject")
+
+    system_prompt = ASK_SYSTEM_PROMPT if body.explain else ASK_STRICT_PROMPT
+
+    response = groq_client.chat.completions.create(
+        model=ASK_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": build_ask_prompt(question, chunks)},
+        ],
+        temperature=0.2,
+    )
+
+    return {
+        "question": question,
+        "answer": response.choices[0].message.content,
+        "sources": [
+            {"page": c["page"], "filename": c["filename"], "distance": c["distance"]}
+            for c in chunks
+        ],
+        "tokens": f"{response.usage.prompt_tokens} / {response.usage.completion_tokens}",
+    }
