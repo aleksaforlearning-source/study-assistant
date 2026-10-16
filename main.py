@@ -448,3 +448,36 @@ def ask(subject_id: int, body: AskIn):
         ],
         "tokens": f"{response.usage.prompt_tokens} / {response.usage.completion_tokens}",
     }
+@app.get("/subjects/{subject_id}/blocks")
+def list_blocks(subject_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT b.id, b.name, b.position, "
+                "count(DISTINCT s.id) AS files, "
+                "count(DISTINCT tc.topic_id) AS topics, "
+                "count(DISTINCT tc.chunk_id) AS weight, "
+                "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'new') AS fresh, "
+                "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'known') AS known, "
+                "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'review') AS review "
+                "FROM blocks b "
+                "LEFT JOIN sources s ON s.block_id = b.id "
+                "LEFT JOIN chunks c ON c.source_id = s.id "
+                "LEFT JOIN topic_chunks tc ON tc.chunk_id = c.id "
+                "LEFT JOIN topics t ON t.id = tc.topic_id "
+                "WHERE b.subject_id = %s "
+                "GROUP BY b.id ORDER BY b.position",
+                (subject_id,),
+            )
+            return [
+                {
+                    "block_id": r[0],
+                    "name": r[1],
+                    "position": r[2],
+                    "files": r[3],
+                    "topics": r[4],
+                    "weight": r[5],
+                    "status": {"new": r[6], "known": r[7], "review": r[8]},
+                }
+                for r in cur.fetchall()
+            ]
