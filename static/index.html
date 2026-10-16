@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>study assistant</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; max-width: 760px;
+         font: 15px/1.5 system-ui, sans-serif; color: #1a1a1a; background: #fff; }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  select { font: inherit; padding: 6px 8px; margin-bottom: 24px; }
+  .block { margin-bottom: 20px; }
+  .block-head { display: flex; justify-content: space-between;
+                align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .block-name { font-weight: 600; }
+  .block-meta { font-size: 13px; color: #666; white-space: nowrap; }
+  .bar-track { height: 10px; background: #eee; }
+  .bar { height: 10px; display: flex; }
+  .seg-new { background: #c4c4c4; }
+  .seg-known { background: #3d9970; }
+  .seg-review { background: #d9534f; }
+  .empty { color: #999; }
+</style>
+</head>
+<body>
+<h1>study assistant</h1>
+<select id="subject"></select>
+<div id="blocks"></div>
+
+<script>
+async function loadSubjects() {
+  const subjects = await fetch("/subjects").then(r => r.json());
+  const select = document.getElementById("subject");
+
+  select.innerHTML = subjects
+    .map(s => `<option value="${s.id}">${s.name}</option>`)
+    .join("");
+
+  select.onchange = () => loadBlocks(select.value);
+  if (subjects.length) loadBlocks(subjects[0].id);
+}
+
+async function loadBlocks(subjectId) {
+  const blocks = await fetch(`/subjects/${subjectId}/blocks`).then(r => r.json());
+  const target = document.getElementById("blocks");
+
+  if (!blocks.length) {
+    target.innerHTML = `<p class="empty">в этом предмете пока нет блоков</p>`;
+    return;
+  }
+
+  const maxWeight = Math.max(...blocks.map(b => b.weight), 1);
+
+  target.innerHTML = blocks.map(b => {
+    const total = b.topics || 1;
+    const pct = n => (n / total) * 100;
+
+    return `
+      <div class="block">
+        <div class="block-head">
+          <span class="block-name">${b.name}</span>
+          <span class="block-meta">${b.topics} тем</span>
+          </div>
+        <div class="bar-track" style="width: ${(b.weight / maxWeight) * 100}%">
+          <div class="bar">
+            <div class="seg-new"    style="width: ${pct(b.status.new)}%"></div>
+            <div class="seg-known"  style="width: ${pct(b.status.known)}%"></div>
+            <div class="seg-review" style="width: ${pct(b.status.review)}%"></div>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+loadSubjects();
+</script>
+</body>
+</html>

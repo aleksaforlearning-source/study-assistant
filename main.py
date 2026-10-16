@@ -16,6 +16,8 @@ from build_hierarchy import build_hierarchy
 
 from embedder import embed_source, embed_texts
 
+from fastapi.staticfiles import StaticFiles
+
 app = FastAPI(title="Study Assistant")
 
 load_dotenv()
@@ -481,3 +483,4 @@ def list_blocks(subject_id: int):
                 }
                 for r in cur.fetchall()
             ]
+app.mount("/app", StaticFiles(directory="static", html=True), name="static")
