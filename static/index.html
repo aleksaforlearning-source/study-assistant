@@ -21,6 +21,33 @@
   .seg-known { background: #3d9970; }
   .seg-review { background: #d9534f; }
   .empty { color: #999; }
+    .block-head { cursor: pointer; }
+  .topics { margin-top: 8px; }
+  .topic { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .topic.child { padding-left: 20px; }
+  .topic-title { flex: 1; }
+  .topic-weight { font-size: 12px; color: #999; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot-new { background: #c4c4c4; }
+  .dot-known { background: #3d9970; }
+  .dot-review { background: #d9534f; }
+  .arrow { display: inline-block; width: 14px; color: #999; font-size: 11px; }  
+  .dot { cursor: pointer; }
+  .kill { color: #ddd; cursor: pointer; padding: 0 4px; }
+  .kill:hover { color: #d9534f; }
+  .topic-title { cursor: text; }
+  .pen { color: #ddd; cursor: pointer; padding: 0 4px; }
+  .pen:hover { color: #666; }
+  .panel { margin: 4px 0 10px 20px; padding: 8px 10px; border-left: 2px solid #eee; }
+  .note { padding: 4px 0; font-size: 14px; }
+  .note-kind { font-size: 11px; color: #999; margin-right: 6px; }
+  .panel textarea { width: 100%; font: inherit; font-size: 14px; padding: 6px; }
+  .panel button { font: inherit; font-size: 13px; margin-top: 4px; padding: 4px 10px; }
+  .ask { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; }
+  .ask input { width: 100%; font: inherit; font-size: 14px; padding: 6px; }
+  .answer { margin-top: 8px; font-size: 14px; }
+  .answer-text { background: #fafafa; padding: 8px 10px; }
+  .answer-meta { font-size: 12px; color: #999; margin: 4px 0; }
 </style>
 </head>
 <body>
@@ -29,6 +56,109 @@
 <div id="blocks"></div>
 
 <script>
+const lastAnswer = {};
+
+const escapeHtml = text => text
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;");
+
+const renderAnswer = text => escapeHtml(text)
+  .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+  .replace(/\n/g, "<br>");
+
+async function togglePanel(topicId, blockId) {
+  const panel = document.getElementById(`panel-${topicId}`);
+
+  if (panel.style.display === "block") {
+    panel.style.display = "none";
+    return;
+  }
+
+  const topic = await fetch(`/topics/${topicId}`).then(r => r.json());
+
+  const notes = topic.notes.length
+    ? topic.notes.map(n => `
+        <div class="note">
+          <span class="note-kind">${n.kind === "ai_answer" ? "ассистент" : "я"}</span>
+          ${renderAnswer(n.text)}
+        </div>`).join("")
+    : `<div class="note" style="color:#999">заметок пока нет</div>`;
+
+  panel.innerHTML = `
+    ${notes}
+    <textarea id="draft-${topicId}" rows="3" placeholder="своими словами..."></textarea>
+    <button onclick="saveNote(${topicId}, ${blockId})">сохранить</button>
+    <div class="ask">
+      <input id="q-${topicId}" placeholder="спросить про эту тему...">
+      <button onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">спросить</button>
+      <div class="answer" id="answer-${topicId}"></div>
+    </div>`;
+
+  panel.style.display = "block";
+}
+
+async function saveNote(topicId, blockId) {
+  const draft = document.getElementById(`draft-${topicId}`);
+  const text = draft.value.trim();
+  if (!text) return;
+
+  await fetch(`/topics/${topicId}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, kind: "own_explanation" }),
+  });
+
+  draft.value = "";
+  await togglePanel(topicId, blockId);
+  await togglePanel(topicId, blockId);
+}
+
+async function askTopic(topicId, subjectId, blockId) {
+  const input = document.getElementById(`q-${topicId}`);
+  const target = document.getElementById(`answer-${topicId}`);
+  const question = input.value.trim();
+  if (!question) return;
+
+  target.innerHTML = "думаю...";
+
+  const response = await fetch(`/subjects/${subjectId}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, limit: 5 }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    target.innerHTML = `не получилось: ${escapeHtml(error.detail)}`;
+    return;
+  }
+
+  const data = await response.json();
+  lastAnswer[topicId] = data.answer;
+
+  const pages = data.sources.map(s => s.page).join(", ");
+
+  target.innerHTML = `
+    <div class="answer-text">${renderAnswer(data.answer)}</div>
+    <div class="answer-meta">страницы ${pages}</div>
+    <button onclick="saveAnswer(${topicId}, ${blockId})">сохранить как заметку</button>`;
+}
+
+async function saveAnswer(topicId, blockId) {
+  const text = lastAnswer[topicId];
+  if (!text) return;
+
+  await fetch(`/topics/${topicId}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, kind: "ai_answer" }),
+  });
+
+  await togglePanel(topicId, blockId);
+  await togglePanel(topicId, blockId);
+}
+
 async function loadSubjects() {
   const subjects = await fetch("/subjects").then(r => r.json());
   const select = document.getElementById("subject");
@@ -58,10 +188,10 @@ async function loadBlocks(subjectId) {
 
     return `
       <div class="block">
-        <div class="block-head">
-          <span class="block-name">${b.name}</span>
-          <span class="block-meta">${b.topics} тем</span>
-          </div>
+        <div class="block-head" onclick="toggleBlock(${b.block_id})">
+            <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${b.name}</span>
+            <span class="block-meta">${b.topics} тем</span>
+        </div>
         <div class="bar-track" style="width: ${(b.weight / maxWeight) * 100}%">
           <div class="bar">
             <div class="seg-new"    style="width: ${pct(b.status.new)}%"></div>
@@ -69,8 +199,93 @@ async function loadBlocks(subjectId) {
             <div class="seg-review" style="width: ${pct(b.status.review)}%"></div>
           </div>
         </div>
+        <div class="topics" id="topics-${b.block_id}"></div>
       </div>`;
   }).join("");
+}
+
+const NEXT_STATUS = { new: "known", known: "review", review: "new" };
+
+async function toggleBlock(blockId) {
+  const box = document.getElementById(`topics-${blockId}`);
+  const arrow = document.getElementById(`arrow-${blockId}`);
+
+  if (box.innerHTML) {
+    box.innerHTML = "";
+    arrow.textContent = "▸";
+    return;
+  }
+
+  const topics = await fetch(`/blocks/${blockId}/topics`).then(r => r.json());
+
+  const children = {};
+  topics.forEach(t => {
+    if (t.parent_id === null) return;
+    children[t.parent_id] = children[t.parent_id] || [];
+    children[t.parent_id].push(t);
+  });
+
+  const row = (t, isChild) => `
+    <div class="topic ${isChild ? "child" : ""}">
+      <span class="dot dot-${t.status}" onclick="cycleStatus(${t.id}, '${t.status}', ${blockId})"></span>
+      <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId})">${t.title}</span>
+      <span class="topic-weight">${t.weight}</span>
+      <span class="pen" onclick="renameTopic(${t.id}, ${blockId})">✎</span>
+      <span class="kill" onclick="deleteTopic(${t.id}, ${blockId})">×</span>
+    </div>
+    <div class="panel" id="panel-${t.id}" style="display: none"></div>`;
+
+  box.innerHTML = topics
+    .filter(t => t.parent_id === null)
+    .map(t => row(t, false) + (children[t.id] || []).map(c => row(c, true)).join(""))
+    .join("");
+
+  arrow.textContent = "▾";
+}
+
+async function patchTopic(topicId, body) {
+  const response = await fetch(`/topics/${topicId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    alert(`не получилось: ${error.detail}`);
+    return false;
+  }
+  return true;
+}
+
+async function refresh(blockId) {
+  const select = document.getElementById("subject");
+  await loadBlocks(select.value);
+  await toggleBlock(blockId);
+}
+
+async function cycleStatus(topicId, current, blockId) {
+  if (await patchTopic(topicId, { status: NEXT_STATUS[current] })) {
+    await refresh(blockId);
+  }
+}
+
+async function renameTopic(topicId, blockId) {
+  const current = document.getElementById(`title-${topicId}`).textContent;
+  const title = prompt("новое название", current);
+
+  if (!title || title === current) return;
+  if (await patchTopic(topicId, { title })) {
+    await refresh(blockId);
+  }
+}
+
+async function deleteTopic(topicId, blockId) {
+  const title = document.getElementById(`title-${topicId}`).textContent;
+  if (!confirm(`удалить тему «${title}»?`)) return;
+
+  await fetch(`/topics/${topicId}`, { method: "DELETE" });
+  await refresh(blockId);
 }
 
 loadSubjects();

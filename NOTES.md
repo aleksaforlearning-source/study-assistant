@@ -401,3 +401,9 @@ UPDATE topics SET parent_id = NULL WHERE subject_id = 4 AND parent_origin = 'ai'
 - [ ] Merge slides sharing one `##` heading into a single chunk; needs
       `page_start`/`page_end` so the original slide stays reachable
 - [ ] Vision pass over `is_weak` chunks
+- [ ] `is_weak` threshold is miscalibrated: pages 24/28/29 (178-276 chars) are
+  excluded from topic extraction, yet they outrank the included pages
+  (317-380 chars) in semantic search — 0.379-0.384 vs 0.413-0.438 on
+  "how do I add an element". 15 of 47 chunks are retrievable but have no
+  topic, so filtering `/ask` by `topic_id` silently drops them. Narrowing
+  stays opt-in until the threshold is re-tuned against a golden dataset.

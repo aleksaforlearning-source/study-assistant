@@ -65,14 +65,19 @@ class NoteIn(BaseModel):
     kind: str = "own_explanation"
 
 
+TOPIC_STATUSES = ("new", "known", "review")
+
+
 class TopicPatch(BaseModel):
     title: str | None = None
     parent_id: int | None = None
+    status: str | None = None
 
 class AskIn(BaseModel):
     question: str
     limit: int = 5
     explain: bool = True
+    topic_id: int | None = None
 
 
 @app.get("/health")
@@ -169,19 +174,36 @@ def upload_source(
         "status": "processed",
     }
 
-def find_chunks(subject_id: int, query: str, limit: int) -> list[dict]:
+def find_chunks(
+    subject_id: int,
+    query: str,
+    limit: int,
+    topic_id: int | None = None,
+) -> list[dict]:
     query_vector = str(embed_texts([query])[0])
+
+    head = (
+        "SELECT c.id, c.page_number, c.text, s.filename, "
+        "c.embedding <=> %s::vector AS distance "
+        "FROM chunks c JOIN sources s ON s.id = c.source_id "
+    )
+    tail = "ORDER BY c.embedding <=> %s::vector LIMIT %s"
+
+    if topic_id is None:
+        sql = head + "WHERE s.subject_id = %s AND c.embedding IS NOT NULL " + tail
+        params = (query_vector, subject_id, query_vector, limit)
+    else:
+        sql = (
+            head
+            + "JOIN topic_chunks tc ON tc.chunk_id = c.id "
+            + "WHERE s.subject_id = %s AND c.embedding IS NOT NULL "
+            + "AND tc.topic_id = %s " + tail
+        )
+        params = (query_vector, subject_id, topic_id, query_vector, limit)
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT c.id, c.page_number, c.text, s.filename, "
-                "c.embedding <=> %s::vector AS distance "
-                "FROM chunks c JOIN sources s ON s.id = c.source_id "
-                "WHERE s.subject_id = %s AND c.embedding IS NOT NULL "
-                "ORDER BY c.embedding <=> %s::vector LIMIT %s",
-                (query_vector, subject_id, query_vector, limit),
-            )
+            cur.execute(sql, params)
             return [
                 {
                     "chunk_id": r[0],
@@ -266,7 +288,7 @@ def get_topic(topic_id: int):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.id, t.title, t.parent_id, p.title, t.subject_id "
+                "SELECT t.id, t.title, t.parent_id, p.title, t.subject_id, t.status "
                 "FROM topics t LEFT JOIN topics p ON p.id = t.parent_id "
                 "WHERE t.id = %s",
                 (topic_id,),
@@ -290,6 +312,7 @@ def get_topic(topic_id: int):
                     "filename": r[3],
                     "source_type": r[4],
                 }
+                
                 for r in cur.fetchall()
             ]
 
@@ -309,6 +332,7 @@ def get_topic(topic_id: int):
         "parent_id": row[2],
         "parent_title": row[3],
         "subject_id": row[4],
+        "status": row[5],
         "chunks": chunks,
         "notes": notes,
     }
@@ -356,7 +380,16 @@ def update_topic(topic_id: int, patch: TopicPatch):
                     "UPDATE topics SET title = %s WHERE id = %s",
                     (patch.title.strip(), topic_id),
                 )
-
+            if "status" in fields:
+                if patch.status not in TOPIC_STATUSES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"status must be one of {TOPIC_STATUSES}",
+                    )
+                cur.execute(
+                    "UPDATE topics SET status = %s WHERE id = %s",
+                    (patch.status, topic_id),
+                )
             if "parent_id" in fields:
                 if patch.parent_id is not None:
                     if patch.parent_id == topic_id:
@@ -425,8 +458,8 @@ def ask(subject_id: int, body: AskIn):
     if not question:
         raise HTTPException(status_code=400, detail="question cannot be empty")
 
-    chunks = find_chunks(subject_id, question, body.limit)
-
+    chunks = find_chunks(subject_id, question, body.limit, body.topic_id)
+    
     if not chunks:
         raise HTTPException(status_code=404, detail="no material with embeddings for this subject")
 
@@ -443,6 +476,7 @@ def ask(subject_id: int, body: AskIn):
 
     return {
         "question": question,
+        "topic_id": body.topic_id,
         "answer": response.choices[0].message.content,
         "sources": [
             {"page": c["page"], "filename": c["filename"], "distance": c["distance"]}
@@ -483,4 +517,47 @@ def list_blocks(subject_id: int):
                 }
                 for r in cur.fetchall()
             ]
+
+@app.get("/blocks/{block_id}/topics")
+def list_block_topics(block_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT t.id, t.title, t.parent_id, t.status, "
+                "count(DISTINCT tc.chunk_id) AS weight "
+                "FROM topics t "
+                "JOIN topic_chunks tc ON tc.topic_id = t.id "
+                "JOIN chunks c ON c.id = tc.chunk_id "
+                "JOIN sources s ON s.id = c.source_id "
+                "WHERE s.block_id = %s "
+                "GROUP BY t.id ORDER BY weight DESC",
+                (block_id,),
+            )
+            return [
+                {
+                    "id": r[0],
+                    "title": r[1],
+                    "parent_id": r[2],
+                    "status": r[3],
+                    "weight": r[4],
+                }
+                for r in cur.fetchall()
+            ]
+@app.delete("/topics/{topic_id}")
+def delete_topic(topic_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT title FROM topics WHERE id = %s", (topic_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"topic {topic_id} not found")
+            title = row[0]
+
+            cur.execute("UPDATE topics SET parent_id = NULL WHERE parent_id = %s", (topic_id,))
+            cur.execute("DELETE FROM notes WHERE topic_id = %s", (topic_id,))
+            cur.execute("DELETE FROM topic_chunks WHERE topic_id = %s", (topic_id,))
+            cur.execute("DELETE FROM topics WHERE id = %s", (topic_id,))
+
+    return {"deleted": topic_id, "title": title}
+
 app.mount("/app", StaticFiles(directory="static", html=True), name="static")
