@@ -9,7 +9,7 @@
   body { margin: 0; padding: 24px 16px; max-width: 760px;
          font: 15px/1.5 system-ui, sans-serif; color: #1a1a1a; background: #fff; }
   h1 { font-size: 18px; margin: 0 0 16px; }
-  select { font: inherit; padding: 6px 8px; margin-bottom: 24px; }
+  select { font: inherit; padding: 6px 8px;}
   .block { margin-bottom: 20px; }
   .block-head { display: flex; justify-content: space-between;
                 align-items: baseline; gap: 12px; margin-bottom: 6px; }
@@ -48,11 +48,24 @@
   .answer { margin-top: 8px; font-size: 14px; }
   .answer-text { background: #fafafa; padding: 8px 10px; }
   .answer-meta { font-size: 12px; color: #999; margin: 4px 0; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; padding: 5px 10px; cursor: pointer; }
+  .upload { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;margin: 0 0 14px; padding: 8px 10px; background: #fafafa; font-size: 13px; }
+  .upload select { font-size: 13px; padding: 4px 6px; }
+  .progress { color: #666; }
+  .progress.failed { color: #d9534f; }
 </style>
 </head>
 <body>
+
 <h1>study assistant</h1>
-<select id="subject"></select>
+
+<div class="toolbar">
+  <select id="subject"></select>
+  <button onclick="addSubject()">+ subject</button>
+  <button onclick="addBlock()">+ block</button>
+</div>
+
 <div id="blocks"></div>
 
 <script>
@@ -80,18 +93,18 @@ async function togglePanel(topicId, blockId) {
   const notes = topic.notes.length
     ? topic.notes.map(n => `
         <div class="note">
-          <span class="note-kind">${n.kind === "ai_answer" ? "ассистент" : "я"}</span>
+          <span class="note-kind">${n.kind === "ai_answer" ? "assistant" : "me"}</span>
           ${renderAnswer(n.text)}
         </div>`).join("")
-    : `<div class="note" style="color:#999">заметок пока нет</div>`;
+    : `<div class="note" style="color:#999">no notes yet</div>`;
 
   panel.innerHTML = `
     ${notes}
-    <textarea id="draft-${topicId}" rows="3" placeholder="своими словами..."></textarea>
-    <button onclick="saveNote(${topicId}, ${blockId})">сохранить</button>
+    <textarea id="draft-${topicId}" rows="3" placeholder="in your own words..."></textarea>
+    <button onclick="saveNote(${topicId}, ${blockId})">save</button>
     <div class="ask">
-      <input id="q-${topicId}" placeholder="спросить про эту тему...">
-      <button onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">спросить</button>
+      <input id="q-${topicId}" placeholder="ask about this topic...">
+      <button onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">ask</button>
       <div class="answer" id="answer-${topicId}"></div>
     </div>`;
 
@@ -120,7 +133,7 @@ async function askTopic(topicId, subjectId, blockId) {
   const question = input.value.trim();
   if (!question) return;
 
-  target.innerHTML = "думаю...";
+  target.innerHTML = "thinking...";
 
   const response = await fetch(`/subjects/${subjectId}/ask`, {
     method: "POST",
@@ -130,7 +143,7 @@ async function askTopic(topicId, subjectId, blockId) {
 
   if (!response.ok) {
     const error = await response.json();
-    target.innerHTML = `не получилось: ${escapeHtml(error.detail)}`;
+    target.innerHTML = `failed: ${escapeHtml(error.detail)}`;
     return;
   }
 
@@ -141,8 +154,8 @@ async function askTopic(topicId, subjectId, blockId) {
 
   target.innerHTML = `
     <div class="answer-text">${renderAnswer(data.answer)}</div>
-    <div class="answer-meta">страницы ${pages}</div>
-    <button onclick="saveAnswer(${topicId}, ${blockId})">сохранить как заметку</button>`;
+    <div class="answer-meta">pages ${pages}</div>
+    <button onclick="saveAnswer(${topicId}, ${blockId})">save as note</button>`;
 }
 
 async function saveAnswer(topicId, blockId) {
@@ -176,7 +189,7 @@ async function loadBlocks(subjectId) {
   const target = document.getElementById("blocks");
 
   if (!blocks.length) {
-    target.innerHTML = `<p class="empty">в этом предмете пока нет блоков</p>`;
+    target.innerHTML = `<p class="empty">no blocks yet</p>`;
     return;
   }
 
@@ -190,7 +203,7 @@ async function loadBlocks(subjectId) {
       <div class="block">
         <div class="block-head" onclick="toggleBlock(${b.block_id})">
             <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${b.name}</span>
-            <span class="block-meta">${b.topics} тем</span>
+            <span class="block-meta">${b.topics} topics</span>
         </div>
         <div class="bar-track" style="width: ${(b.weight / maxWeight) * 100}%">
           <div class="bar">
@@ -217,10 +230,12 @@ async function toggleBlock(blockId) {
   }
 
   const topics = await fetch(`/blocks/${blockId}/topics`).then(r => r.json());
-
+  const ids = new Set(topics.map(t => t.id));
+  const isRoot = t => t.parent_id === null || !ids.has(t.parent_id);
+  
   const children = {};
   topics.forEach(t => {
-    if (t.parent_id === null) return;
+    if (isRoot(t)) return;
     children[t.parent_id] = children[t.parent_id] || [];
     children[t.parent_id].push(t);
   });
@@ -235,8 +250,22 @@ async function toggleBlock(blockId) {
     </div>
     <div class="panel" id="panel-${t.id}" style="display: none"></div>`;
 
-  box.innerHTML = topics
-    .filter(t => t.parent_id === null)
+  const uploadRow = `
+    <div class="upload">
+      <input type="file" id="file-${blockId}" accept="application/pdf">
+      <select id="type-${blockId}">
+        <option value="lecture">lecture</option>
+        <option value="homework">homework</option>
+        <option value="concept">concept</option>
+        <option value="past_exam">past exam</option>
+        <option value="other">other</option>
+      </select>
+      <button onclick="uploadFile(${blockId})">upload</button>
+      <span class="progress" id="progress-${blockId}"></span>
+    </div>`;
+    
+  box.innerHTML = uploadRow + topics
+    .filter(isRoot)
     .map(t => row(t, false) + (children[t.id] || []).map(c => row(c, true)).join(""))
     .join("");
 
@@ -252,7 +281,7 @@ async function patchTopic(topicId, body) {
 
   if (!response.ok) {
     const error = await response.json();
-    alert(`не получилось: ${error.detail}`);
+    alert(`failed: ${error.detail}`);
     return false;
   }
   return true;
@@ -288,6 +317,103 @@ async function deleteTopic(topicId, blockId) {
   await refresh(blockId);
 }
 
+async function addSubject() {
+  const name = prompt("subject name");
+  if (!name || !name.trim()) return;
+
+  const response = await fetch("/subjects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+
+  if (!response.ok) {
+    alert("failed to create subject");
+    return;
+  }
+
+  const subject = await response.json();
+  await loadSubjects();
+  document.getElementById("subject").value = subject.id;
+  await loadBlocks(subject.id);
+}
+
+async function addBlock() {
+  const subjectId = document.getElementById("subject").value;
+  if (!subjectId) return;
+
+  const name = prompt("block name, e.g. Lecture 3 — Heaps");
+  if (!name || !name.trim()) return;
+
+  const response = await fetch(`/subjects/${subjectId}/blocks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    alert(`failed to create block: ${error.detail}`);
+    return;
+  }
+
+  await loadBlocks(subjectId);
+}
+
+async function uploadFile(blockId) {
+  const input = document.getElementById(`file-${blockId}`);
+  const type = document.getElementById(`type-${blockId}`).value;
+  const progress = document.getElementById(`progress-${blockId}`);
+
+  if (!input.files.length) {
+    progress.textContent = "pick a file first";
+    return;
+  }
+
+  const form = new FormData();
+  form.append("file", input.files[0]);
+  form.append("source_type", type);
+
+  progress.className = "progress";
+  progress.textContent = "uploading...";
+
+  const response = await fetch(`/blocks/${blockId}/upload`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    progress.className = "progress failed";
+    progress.textContent = error.detail;
+    return;
+  }
+
+  const result = await response.json();
+  progress.textContent = `${result.chunks} chunks (${result.weak_chunks} weak) — processing...`;
+  input.value = "";
+
+  watchJob(result.job_id, blockId, progress);
+}
+
+async function watchJob(jobId, blockId, progress) {
+  const job = await fetch(`/jobs/${jobId}`).then(r => r.json());
+
+  if (job.status === "running") {
+    progress.textContent = `${job.stage}...`;
+    setTimeout(() => watchJob(jobId, blockId, progress), 3000);
+    return;
+  }
+
+  if (job.status === "failed") {
+    progress.className = "progress failed";
+    progress.textContent = `failed: ${job.message}`;
+    return;
+  }
+
+  progress.textContent = "done";
+  await refresh(blockId);
+}
 loadSubjects();
 </script>
 </body>

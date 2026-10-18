@@ -18,6 +18,8 @@ from embedder import embed_source, embed_texts
 
 from fastapi.staticfiles import StaticFiles
 
+from pipeline import run_pipeline
+
 app = FastAPI(title="Study Assistant")
 
 load_dotenv()
@@ -33,12 +35,15 @@ PART 1 — From the lecture:
 - Use only what the fragments say
 - Cite the page after each claim, like [page 29]
 - If the fragments do not answer the question, say so plainly here
+- Write math in plain text, never LaTeX: O(log n), not \(O(\log n)\)
 
 PART 2 — My explanation:
 - Explain the same idea in simpler words, with an analogy or a tiny example
 - Never contradict PART 1
 - Never introduce notation or terms the course does not use
 - If you are not confident, say so instead of guessing
+- If the fragments show which convention the course uses, commit to it; do not
+  offer both alternatives
 - Keep it to a few sentences
 
 Answer in the same language the question is asked in.
@@ -78,6 +83,9 @@ class AskIn(BaseModel):
     limit: int = 5
     explain: bool = True
     topic_id: int | None = None
+
+class BlockIn(BaseModel):
+    name: str
 
 
 @app.get("/health")
@@ -524,13 +532,14 @@ def list_block_topics(block_id: int):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.id, t.title, t.parent_id, t.status, "
-                "count(DISTINCT tc.chunk_id) AS weight "
+                "count(DISTINCT tc.chunk_id) AS weight, "
+                "min(c.page_number) AS first_page "
                 "FROM topics t "
                 "JOIN topic_chunks tc ON tc.topic_id = t.id "
                 "JOIN chunks c ON c.id = tc.chunk_id "
                 "JOIN sources s ON s.id = c.source_id "
                 "WHERE s.block_id = %s "
-                "GROUP BY t.id ORDER BY weight DESC",
+                "GROUP BY t.id ORDER BY min(c.page_number), t.title",
                 (block_id,),
             )
             return [
@@ -540,9 +549,11 @@ def list_block_topics(block_id: int):
                     "parent_id": r[2],
                     "status": r[3],
                     "weight": r[4],
+                    "first_page": r[5],
                 }
                 for r in cur.fetchall()
             ]
+        
 @app.delete("/topics/{topic_id}")
 def delete_topic(topic_id: int):
     with get_connection() as conn:
@@ -561,3 +572,115 @@ def delete_topic(topic_id: int):
     return {"deleted": topic_id, "title": title}
 
 app.mount("/app", StaticFiles(directory="static", html=True), name="static")
+
+@app.post("/subjects/{subject_id}/blocks")
+def create_block(subject_id: int, body: BlockIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name cannot be empty")
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM subjects WHERE id = %s", (subject_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"subject {subject_id} not found")
+
+            cur.execute(
+                "INSERT INTO blocks (subject_id, name, position) VALUES (%s, %s, "
+                "COALESCE((SELECT max(position) + 1 FROM blocks WHERE subject_id = %s), 1)) "
+                "RETURNING id, position",
+                (subject_id, name, subject_id),
+            )
+            block_id, position = cur.fetchone()
+
+    return {"block_id": block_id, "name": name, "position": position}
+
+
+@app.post("/blocks/{block_id}/upload")
+def upload_to_block(
+    block_id: int,
+    background_tasks: BackgroundTasks,
+    source_type: SourceType = Form(...),
+    file: UploadFile = File(...),
+):
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=415,
+            detail=f"only PDF for now, got {file.content_type}",
+        )
+
+    data = file.file.read()
+    content_hash = hashlib.sha256(data).hexdigest()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT subject_id FROM blocks WHERE id = %s", (block_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"block {block_id} not found")
+            subject_id = row[0]
+
+            cur.execute(
+                "SELECT id FROM sources WHERE subject_id = %s AND content_hash = %s",
+                (subject_id, content_hash),
+            )
+            existing = cur.fetchone()
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"already uploaded as source {existing[0]}",
+                )
+
+            chunks = parse_pdf(data)
+
+            cur.execute(
+                "INSERT INTO sources (subject_id, block_id, type, filename, content_hash, pdf) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (subject_id, block_id, source_type.value, file.filename, content_hash, data),
+            )
+            source_id = cur.fetchone()[0]
+
+            for chunk in chunks:
+                cur.execute(
+                    "INSERT INTO chunks (source_id, text, page_number, is_weak, drawings_count) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (source_id, chunk["text"], chunk["page_number"],
+                     chunk["is_weak"], chunk["drawings_count"]),
+                )
+
+            cur.execute(
+                "INSERT INTO jobs (source_id) VALUES (%s) RETURNING id",
+                (source_id,),
+            )
+            job_id = cur.fetchone()[0]
+
+    background_tasks.add_task(run_pipeline, job_id, source_id, subject_id, block_id)
+
+    return {
+        "job_id": job_id,
+        "source_id": source_id,
+        "filename": file.filename,
+        "chunks": len(chunks),
+        "weak_chunks": sum(1 for c in chunks if c["is_weak"]),
+    }
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, source_id, stage, status, message FROM jobs WHERE id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+
+    return {
+        "job_id": row[0],
+        "source_id": row[1],
+        "stage": row[2],
+        "status": row[3],
+        "message": row[4],
+    }

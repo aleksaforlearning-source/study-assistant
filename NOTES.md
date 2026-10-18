@@ -295,18 +295,20 @@ the lecture. Revisit once there is an interface to judge it against.
 itself a child. The schema supports deeper nesting; whether a three-level tree is
 navigable is a UI question.
 
-### `json_validate_failed` is intermittent and not fully diagnosed
+### Solved: `json_validate_failed` on Groq
 
-Groq returns a 400 with an empty `failed_generation`. Correlates with longer, denser
-batches. Smaller batches did **not** reduce it, so the original "the request is too
-hard" theory is unconfirmed. Handled by retrying twice and then falling back to a
-call without `response_format`, extracting the JSON from the text.
+Cause: Groq's `max_completion_tokens` defaults to 1024, and for `gpt-oss`
+reasoning tokens are drawn from that same budget. The model spent the budget
+reasoning, got cut off mid-JSON, and Groq's validator rejected the truncated
+output.
 
-A plausible contributor — a JSON array inside the system prompt confusing the
-constrained decoder — is also unconfirmed: the pre-existing prompt contained one and
-worked. System prompts are now written without bracket syntax as a precaution, not
-as a fix.
+Evidence: hierarchy over 11 topics passed, over 26 failed three times in a
+row; the non-JSON fallback returned text with no `{` at all. Raising
+`max_completion_tokens` to 4096 made the same 26-topic input pass first try.
 
+Fix: `max_completion_tokens: 4096` in both `build_hierarchy.py` and
+`topic_extractor.py`, plus `reasoning_effort: "low"` for hierarchy only —
+tree building needs little reasoning, topic extraction does.
 ### Background task failures are invisible to the client
 
 `POST /sources/{id}/topics` returns 202 immediately; if the task then raises, the
@@ -401,7 +403,7 @@ UPDATE topics SET parent_id = NULL WHERE subject_id = 4 AND parent_origin = 'ai'
 - [ ] Merge slides sharing one `##` heading into a single chunk; needs
       `page_start`/`page_end` so the original slide stays reachable
 - [ ] Vision pass over `is_weak` chunks
-- [ ] `is_weak` threshold is miscalibrated: pages 24/28/29 (178-276 chars) are
+- [] `is_weak` threshold is miscalibrated: pages 24/28/29 (178-276 chars) are
   excluded from topic extraction, yet they outrank the included pages
   (317-380 chars) in semantic search — 0.379-0.384 vs 0.413-0.438 on
   "how do I add an element". 15 of 47 chunks are retrievable but have no

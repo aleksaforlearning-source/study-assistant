@@ -65,7 +65,13 @@ def ask_model(titles: list[str]):
         json_mode = attempt < MAX_RETRIES
 
         try:
-            kwargs = {"model": MODEL, "messages": messages, "temperature": 0}
+            kwargs = {
+                "model": MODEL,
+                "messages": messages,
+                "temperature": 0,
+                "max_completion_tokens": 4096,
+                "reasoning_effort": "low",
+            }
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
 
@@ -80,6 +86,7 @@ def ask_model(titles: list[str]):
             if "json_validate_failed" not in str(error):
                 raise
             print(f"  json_validate_failed, попытка {attempt}/{MAX_RETRIES}")
+            print(f"  {str(error)[:800]}")
 
         except (json.JSONDecodeError, ValueError) as error:
             print(f"  не разобрался JSON ({error}), попытка {attempt}/{MAX_RETRIES}")
@@ -87,17 +94,29 @@ def ask_model(titles: list[str]):
     raise RuntimeError("не удалось получить валидный JSON от модели")
 
 
-def load_topics(cur, subject_id: int) -> list[dict]:
-    cur.execute(
-        "SELECT id, title, parent_id, parent_origin FROM topics "
-        "WHERE subject_id = %s ORDER BY title",
-        (subject_id,),
-    )
+def load_topics(cur, subject_id: int, block_id: int | None) -> list[dict]:
+    if block_id is None:
+        cur.execute(
+            "SELECT id, title, parent_id, parent_origin FROM topics "
+            "WHERE subject_id = %s ORDER BY title",
+            (subject_id,),
+        )
+    else:
+        cur.execute(
+            "SELECT DISTINCT t.id, t.title, t.parent_id, t.parent_origin "
+            "FROM topics t "
+            "JOIN topic_chunks tc ON tc.topic_id = t.id "
+            "JOIN chunks c ON c.id = tc.chunk_id "
+            "JOIN sources s ON s.id = c.source_id "
+            "WHERE t.subject_id = %s AND s.block_id = %s "
+            "ORDER BY t.title",
+            (subject_id, block_id),
+        )
+
     return [
         {"id": r[0], "title": r[1], "parent_id": r[2], "origin": r[3]}
         for r in cur.fetchall()
     ]
-
 
 def resolve_pairs(raw: list, topics: list[dict], skipped: list) -> list[tuple]:
     by_title = {t["title"]: t["id"] for t in topics}
@@ -158,24 +177,27 @@ def resolve_pairs(raw: list, topics: list[dict], skipped: list) -> list[tuple]:
     return accepted
 
 
-def build_hierarchy(subject_id: int) -> dict:
+def build_hierarchy(subject_id: int, block_id: int | None = None) -> dict:
     skipped = []
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            topics = load_topics(cur, subject_id)
+            topics = load_topics(cur, subject_id, block_id)
 
             if not topics:
-                return {"subject_id": subject_id, "status": "no_topics"}
+                return {"subject_id": subject_id, "block_id": block_id, "status": "no_topics"}
 
+            topic_ids = [t["id"] for t in topics]
             titles = [t["title"] for t in topics]
-            print(f"subject {subject_id}: {len(titles)} тем")
+            print(f"subject {subject_id}, block {block_id}: {len(titles)} тем")
 
             raw, response = ask_model(titles)
             pairs = resolve_pairs(raw.get("pairs", []), topics, skipped)
+
             cur.execute(
-                "UPDATE topics SET parent_id = NULL WHERE subject_id = %s AND parent_origin = 'ai'",
-                (subject_id,),
+                "UPDATE topics SET parent_id = NULL "
+                "WHERE parent_origin = 'ai' AND id = ANY(%s)",
+                (topic_ids,),
             )
 
             for child_id, parent_id, child_title, parent_title in pairs:
@@ -190,13 +212,26 @@ def build_hierarchy(subject_id: int) -> dict:
             cur.execute(
                 "SELECT count(*) FILTER (WHERE parent_id IS NULL), "
                 "count(*) FILTER (WHERE parent_id IS NOT NULL) "
-                "FROM topics WHERE subject_id = %s",
-                (subject_id,),
+                "FROM topics WHERE id = ANY(%s)",
+                (topic_ids,),
             )
             roots, children_total = cur.fetchone()
 
     for reason in skipped:
         print(f"  пропущено: {reason}")
+
+    usage = response.usage
+    return {
+        "subject_id": subject_id,
+        "block_id": block_id,
+        "topics": len(titles),
+        "roots": roots,
+        "children": children_total,
+        "new_links": len(pairs),
+        "skipped": len(skipped),
+        "tokens": f"{usage.prompt_tokens} / {usage.completion_tokens}",
+        "status": "done",
+    }
 
     usage = response.usage
     return {
@@ -211,10 +246,9 @@ def build_hierarchy(subject_id: int) -> dict:
     }
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("использование: py build_hierarchy.py <subject_id>")
+    if len(sys.argv) not in (2, 3):
+        print("использование: py build_hierarchy.py <subject_id> [block_id]")
         sys.exit(1)
 
-    stats = build_hierarchy(int(sys.argv[1]))
-    print()
-    print(json.dumps(stats, indent=2, ensure_ascii=False))
+    block = int(sys.argv[2]) if len(sys.argv) == 3 else None
+    stats = build_hierarchy(int(sys.argv[1]), block)

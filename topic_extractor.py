@@ -85,7 +85,7 @@ def call_llm(chunks: list[dict], existing_topics: list[str]) -> dict:
         json_mode = attempt < MAX_RETRIES
 
         try:
-            kwargs = {"model": MODEL, "messages": messages, "temperature": 0}
+            kwargs = {"model": MODEL, "messages": messages, "temperature": 0, "max_completion_tokens": 4096}
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
 
@@ -109,6 +109,8 @@ def call_llm(chunks: list[dict], existing_topics: list[str]) -> dict:
             print(f"  не разобрался JSON ({error}), попытка {attempt}/{MAX_RETRIES}")
 
     raise RuntimeError("не удалось получить ответ от модели")
+
+
 
 def extract_json(text: str) -> dict:
     start = text.find("{")
