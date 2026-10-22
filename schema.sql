@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS subjects (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -73,4 +75,13 @@ ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(384);
 CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING hnsw (embedding vector_cosine_ops);
 CREATE TABLE IF NOT EXISTS blocks (id SERIAL PRIMARY KEY, subject_id INT NOT NULL REFERENCES subjects(id), name TEXT NOT NULL, position INT NOT NULL DEFAULT 0);
 ALTER TABLE sources ADD COLUMN IF NOT EXISTS block_id INT REFERENCES blocks(id);
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS pdf BYTEA;
 ALTER TABLE topics ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'new';
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS summary_origin TEXT NOT NULL DEFAULT 'ai';
+
+CREATE TABLE IF NOT EXISTS jobs (id SERIAL PRIMARY KEY, source_id INT NOT NULL REFERENCES sources(id), stage TEXT NOT NULL DEFAULT 'queued', status TEXT NOT NULL DEFAULT 'running', message TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+-- Formula pages are re-read from the slide image in the background.
+-- formula_status: NULL = no formulas, pending, done, failed. pdf_text keeps the original extracted text.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS formula_status TEXT;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS pdf_text TEXT;

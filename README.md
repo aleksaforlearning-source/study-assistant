@@ -18,6 +18,24 @@ Three source types go in — `lecture`, `homework`, `past_exam`. Each is split
 into chunks, embedded, and linked to topics. Topics are two-level: broad ones
 come from the syllabus, specific ones are extracted from slides.
 
+### Formulas
+
+PDF text extraction breaks math: `∀ε > 0` comes out as `’Á > 0`, fractions
+lose their bar, `≠` loses its stroke. Pages that use math fonts (Computer
+Modern, Latin Modern, AMS, newtx, Cambria Math) are rendered to an image and
+transcribed by a vision model on Groq into Markdown with LaTeX. Pages without
+math fonts are read from the text layer as before, so text-only lectures cost
+no extra requests.
+
+This runs in the background: an upload is usable right away with the text
+layer, and a worker thread in the server re-reads the queued formula pages one
+by one, newest lecture first. The queue is stored in the database, so it
+continues after a restart, and the original text is kept in `chunks.pdf_text`.
+Each page costs about 2,500 tokens; Groq's free tier allows 200,000 tokens a
+day for the vision model, so roughly 80 formula pages a day, after which the
+worker waits for the limit to refill. Lectures uploaded before this existed
+can be queued with `python fix_formulas.py <source_id>`.
+
 Priority is computed from four signals:
 
 - how often the topic appears in past exams
@@ -54,7 +72,8 @@ priority query.
 
 ## Known limitations
 
-- Formulas, pseudocode and diagrams on slides are not extracted — text layer only
+- Pseudocode and diagrams on slides are not extracted — text layer only
+- Formulas inside a slide's normal text font (not a math font) are not detected
 - Scanned exams are not supported
 - Topic deduplication may fail on synonyms across languages
 

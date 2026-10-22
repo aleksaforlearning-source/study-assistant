@@ -4,6 +4,7 @@ from db import get_connection
 from topic_extractor import extract_topics
 from build_hierarchy import build_hierarchy
 from embedder import embed_source
+from math_pages import enqueue_math_pages
 
 
 def set_stage(job_id: int, stage: str) -> None:
@@ -33,6 +34,10 @@ def run_pipeline(job_id: int, source_id: int, subject_id: int, block_id: int) ->
 
         set_stage(job_id, "hierarchy")
         build_hierarchy(subject_id, block_id)
+
+        # Only marks pages; the formula worker re-reads them in the background.
+        set_stage(job_id, "formulas")
+        enqueue_math_pages(source_id)
 
         finish(job_id, "done")
     except Exception as error:

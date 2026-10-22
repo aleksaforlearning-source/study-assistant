@@ -4,81 +4,449 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>study assistant</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e1015;
+    --surface: #151821;
+    --surface-2: #1c2029;
+    --hover: #232836;
+    --border: #2a3040;
+    --border-strong: #3a4256;
+    --text: #e6e9f0;
+    --muted: #9ba3b4;
+    --faint: #646c7e;
+    --accent: #3b6ef0;
+    --accent-hover: #4d7ff7;
+    --accent-text: #93b4ff;
+    --accent-soft: rgba(80, 125, 245, 0.16);
+    --violet: #b9a2ff;
+    --violet-soft: rgba(167, 139, 250, 0.14);
+    --teal: #5fd4c8;
+    --teal-soft: rgba(79, 209, 197, 0.12);
+    --gradient: linear-gradient(90deg, #4f8bff, #9b72f2 55%, #d96bb0);
+    --green: #4fae80;
+    --red: #e06c75;
+    --grey: #4a5163;
+    --radius: 8px;
+  }
+
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 24px 16px; max-width: 760px;
-         font: 15px/1.5 system-ui, sans-serif; color: #1a1a1a; background: #fff; }
-  h1 { font-size: 18px; margin: 0 0 16px; }
-  select { font: inherit; padding: 6px 8px;}
-  .block { margin-bottom: 20px; }
-  .block-head { display: flex; justify-content: space-between;
-                align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: var(--text); -webkit-font-smoothing: antialiased;
+         background:
+           radial-gradient(1100px 560px at 8% -12%, rgba(66, 110, 240, 0.20), transparent 62%),
+           radial-gradient(900px 480px at 96% -4%, rgba(155, 114, 242, 0.14), transparent 60%),
+           var(--bg); }
+  ::selection { background: var(--accent-soft); }
+
+  /* layout */
+  .layout { display: flex; height: 100vh; }
+  .main { flex: 1; overflow-y: auto; padding: 48px 32px 96px; }
+  .main-inner { max-width: 760px; margin: 0 auto; }
+  .divider { display: none; width: 6px; cursor: col-resize; background: var(--bg);
+             border-left: 1px solid var(--border); transition: background .15s; }
+  .divider:hover, .divider:active { background: var(--accent-soft); }
+  .divider.open { display: block; }
+  .divider:active + .viewer iframe { pointer-events: none; }
+  .viewer { display: none; flex-direction: column; width: 50%; background: var(--surface); }
+  .viewer.open { display: flex; }
+  .viewer-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+                padding: 8px 12px; font-size: 13px; color: var(--muted);
+                border-bottom: 1px solid var(--border); }
+  .viewer-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .viewer iframe { flex: 1; width: 100%; border: 0; background: var(--surface-2); }
+
+  /* controls */
+  button { font: inherit; font-size: 13px; color: var(--text); cursor: pointer;
+           padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+           background: var(--surface-2); transition: background .15s, border-color .15s, color .15s; }
+  button:hover { background: var(--hover); border-color: var(--border-strong); }
+  button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent-hover); outline-offset: 1px; }
+  button.primary { background: linear-gradient(135deg, #3b6ef0, #6b5ce7); border-color: transparent; color: #fff; }
+  button.primary:hover { background: linear-gradient(135deg, #4d7ff7, #7c6cf0); border-color: transparent; }
+  /* Gradient outline for AI actions, Gemini-style. */
+  button.magic { border: 1px solid transparent; color: var(--text);
+                 background: linear-gradient(var(--surface-2), var(--surface-2)) padding-box, var(--gradient) border-box; }
+  button.magic:hover { background: linear-gradient(var(--hover), var(--hover)) padding-box, var(--gradient) border-box; }
+  button.magic::before { content: "✦ "; background: var(--gradient); -webkit-background-clip: text;
+                         background-clip: text; color: transparent; }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover { background: var(--hover); color: var(--text); }
+
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center;
+              width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px;
+              background: transparent; color: var(--faint); flex: none; }
+  .icon-btn:hover { background: var(--hover); color: var(--text); }
+  .icon-btn.danger:hover { color: var(--red); }
+  .icon-btn.on { color: var(--accent-text); background: var(--accent-soft); }
+  .ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8;
+         stroke-linecap: round; stroke-linejoin: round; }
+
+  input, textarea, select { font: inherit; color: var(--text); }
+  input:not([type=file]), textarea {
+    width: 100%; font-size: 14px; padding: 9px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius); resize: vertical; }
+  input:not([type=file]):focus, textarea:focus { border-color: var(--accent); outline: none; }
+  input::placeholder, textarea::placeholder { color: var(--faint); }
+  option { background: var(--surface); color: var(--text); }
+
+  /* header */
+  h1 { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+       margin: 0 0 12px; background: var(--gradient); -webkit-background-clip: text;
+       background-clip: text; color: transparent; }
+  .toolbar { display: flex; gap: 4px; align-items: center; margin-bottom: 40px; flex-wrap: wrap; }
+  .toolbar .spacer { flex: 1; }
+
+  /* notion-style subject picker */
+  #subject { appearance: none; -webkit-appearance: none; font-size: 26px; font-weight: 600;
+             letter-spacing: -.01em; padding: 4px 36px 4px 8px; margin-left: -8px;
+             max-width: 100%; border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+             background: transparent no-repeat right 10px center / 14px
+               url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236f6e69' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+             transition: background-color .15s; }
+  #subject:hover, #subject:focus { background-color: var(--hover); }
+  #subject option { font-size: 15px; font-weight: 400; }
+
+  /* blocks */
+  .empty { color: var(--faint); }
+  .block { margin-bottom: 12px; }
+  .block-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+                padding: 8px 10px 6px; margin: 0 -10px; border-radius: 6px; cursor: pointer;
+                user-select: none; }
+  .block-head:hover { background: var(--surface); }
   .block-name { font-weight: 600; }
-  .block-meta { font-size: 13px; color: #666; white-space: nowrap; }
-  .bar-track { height: 10px; background: #eee; }
-  .bar { height: 10px; display: flex; }
-  .seg-new { background: #c4c4c4; }
-  .seg-known { background: #3d9970; }
-  .seg-review { background: #d9534f; }
-  .empty { color: #999; }
-    .block-head { cursor: pointer; }
-  .topics { margin-top: 8px; }
-  .topic { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
-  .topic.child { padding-left: 20px; }
-  .topic-title { flex: 1; }
-  .topic-weight { font-size: 12px; color: #999; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .dot-new { background: #c4c4c4; }
-  .dot-known { background: #3d9970; }
-  .dot-review { background: #d9534f; }
-  .arrow { display: inline-block; width: 14px; color: #999; font-size: 11px; }  
-  .dot { cursor: pointer; }
-  .kill { color: #ddd; cursor: pointer; padding: 0 4px; }
-  .kill:hover { color: #d9534f; }
-  .topic-title { cursor: text; }
-  .pen { color: #ddd; cursor: pointer; padding: 0 4px; }
-  .pen:hover { color: #666; }
-  .panel { margin: 4px 0 10px 20px; padding: 8px 10px; border-left: 2px solid #eee; }
-  .note { padding: 4px 0; font-size: 14px; }
-  .note-kind { font-size: 11px; color: #999; margin-right: 6px; }
-  .panel textarea { width: 100%; font: inherit; font-size: 14px; padding: 6px; }
-  .panel button { font: inherit; font-size: 13px; margin-top: 4px; padding: 4px 10px; }
-  .ask { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; }
-  .ask input { width: 100%; font: inherit; font-size: 14px; padding: 6px; }
-  .answer { margin-top: 8px; font-size: 14px; }
-  .answer-text { background: #fafafa; padding: 8px 10px; }
-  .answer-meta { font-size: 12px; color: #999; margin: 4px 0; }
-  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
-  button { font: inherit; font-size: 13px; padding: 5px 10px; cursor: pointer; }
-  .upload { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;margin: 0 0 14px; padding: 8px 10px; background: #fafafa; font-size: 13px; }
-  .upload select { font-size: 13px; padding: 4px 6px; }
-  .progress { color: #666; }
-  .progress.failed { color: #d9534f; }
+  .block-meta { font-size: 13px; color: var(--faint); white-space: nowrap; }
+  .formula-progress { color: var(--violet); }
+  .arrow { display: inline-block; width: 18px; color: var(--faint); font-size: 11px; }
+  .bar-track { height: 6px; margin: 2px 0 10px; border-radius: 3px; overflow: hidden; background: var(--surface-2); }
+  .bar { height: 6px; display: flex; }
+  .seg-new { background: var(--grey); }
+  .seg-known { background: var(--green); }
+  .seg-review { background: var(--red); }
+
+  /* topics */
+  .topics { margin: 8px 0 24px; }
+  .topic { display: flex; align-items: center; gap: 10px; padding: 3px 6px 3px 10px; margin: 0 -10px;
+           border-radius: 6px; min-height: 34px; }
+  .topic:hover { background: var(--surface); }
+  .topic.child { padding-left: 32px; }
+  .topic-title { flex: 1; cursor: pointer; min-width: 0; }
+  .topic-parent { font-size: 12px; color: var(--faint); white-space: nowrap;
+                  overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+  .topic-weight { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .topic .icon-btn { opacity: 0; transition: opacity .12s; }
+  .topic:hover .icon-btn, .topic:focus-within .icon-btn { opacity: 1; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; cursor: pointer;
+         box-shadow: 0 0 0 3px transparent; transition: box-shadow .15s; }
+  .dot:hover { box-shadow: 0 0 0 3px var(--hover); }
+  .dot-new { background: var(--grey); }
+  .dot-known { background: var(--green); }
+  .dot-review { background: var(--red); }
+
+  /* drag and drop */
+  .topic { position: relative; transition: padding-bottom .18s ease; }
+  .topic.dragging { opacity: .4; }
+  /* The gap is padding inside the row, so the cursor stays over the target while it opens. */
+  .topic.drop-target { padding-bottom: 42px; background: var(--accent-soft); }
+  .topic.drop-target::after { content: attr(data-drop-label); position: absolute;
+                              left: 32px; right: 6px; bottom: 6px; height: 30px;
+                              display: flex; align-items: center; padding: 0 10px;
+                              font-size: 12px; color: var(--accent-text);
+                              border: 1px dashed var(--accent); border-radius: 6px; }
+  .drop-root { display: flex; align-items: center; min-height: 32px; margin-top: 4px; padding: 0 10px;
+               font-size: 12px; color: transparent; border: 1px dashed transparent; border-radius: 6px;
+               transition: min-height .18s ease, border-color .15s, background .15s, color .15s; }
+  body.dragging-topic .drop-root { border-color: var(--border); color: var(--faint); }
+  .drop-root.drop-target { min-height: 48px; border-color: var(--accent) !important; background: var(--accent-soft);
+                           color: var(--accent-text) !important; }
+
+  /* materials of a block: one row of file chips per type */
+  .materials { margin: 0 0 14px; }
+  .materials-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .materials-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+  .materials-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  .materials-label { width: 72px; flex: none; font-size: 12px; color: var(--faint); }
+  .chip-file { display: inline-flex; align-items: center; max-width: 250px; border-radius: 999px;
+               background: var(--c-bg); border: 1px solid var(--c-border); }
+  .chip-file:hover { border-color: var(--c-text); }
+  .chip-open { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 4px 3px 11px;
+               border: 0; background: transparent; font-size: 12.5px; color: var(--c-text); }
+  .chip-open:hover { background: transparent; }
+  .chip-delete { width: 0; padding: 0; overflow: hidden; border: 0; background: transparent;
+                 font-size: 14px; line-height: 1; color: var(--faint); transition: width .12s; }
+  .chip-file:hover .chip-delete, .chip-delete:focus-visible { width: 22px; padding: 0 8px 0 2px; }
+  .chip-delete:hover { background: transparent; color: var(--red); }
+  .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-icon { flex: none; }
+  .chip-lecture { --c-text: var(--accent-text); --c-bg: var(--accent-soft); --c-border: rgba(80, 125, 245, 0.25); }
+  .chip-concept { --c-text: var(--teal); --c-bg: var(--teal-soft); --c-border: rgba(79, 209, 197, 0.22); }
+  .chip-homework { --c-text: var(--violet); --c-bg: var(--violet-soft); --c-border: rgba(167, 139, 250, 0.25); }
+  .chip-my_solution { --c-text: #f0b86e; --c-bg: rgba(240, 184, 110, 0.10); --c-border: rgba(240, 184, 110, 0.22); }
+  .chip-past_exam { --c-text: #ef8fb8; --c-bg: rgba(239, 143, 184, 0.10); --c-border: rgba(239, 143, 184, 0.22); }
+  .chip-other { --c-text: var(--muted); --c-bg: var(--surface-2); --c-border: var(--border); }
+  .chip-more { padding: 3px 10px; border-radius: 999px; font-size: 12px; color: var(--muted); }
+
+  /* upload */
+  .upload { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 12px;
+            padding: 10px 12px; font-size: 13px; color: var(--muted);
+            border: 1px dashed var(--border); border-radius: var(--radius); }
+  .upload input[type=file] { font-size: 13px; color: var(--muted); max-width: 100%; }
+  .upload input[type=file]::file-selector-button {
+    font: inherit; color: var(--text); background: var(--surface-2); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; margin-right: 10px; }
+  .upload select { font-size: 13px; padding: 5px 8px; background: var(--surface-2);
+                   border: 1px solid var(--border); border-radius: 6px; }
+  .bulk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:disabled:hover { background: var(--surface-2); border-color: var(--border); }
+  .progress { color: var(--muted); }
+  .progress.failed { color: var(--red); }
+
+  /* topic panel */
+  .panel { margin: 6px 0 16px 18px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 12px;
+           background: linear-gradient(160deg, rgba(80, 125, 245, 0.07), rgba(155, 114, 242, 0.04) 40%, transparent 70%),
+                       var(--surface); }
+  .summary-wrap { margin-bottom: 18px; }
+  .summary { position: relative; padding-left: 16px; font-size: 14.5px; line-height: 1.7; }
+  .summary::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px;
+                     border-radius: 2px; background: linear-gradient(180deg, #4f8bff, #9b72f2, #d96bb0); }
+  .summary-bar { display: flex; gap: 4px; align-items: center; margin-top: 8px;
+                 font-size: 12px; color: var(--faint); min-height: 28px; }
+  .summary-bar > span:first-child { margin-right: 4px; }
+  .summary-wrap .icon-btn { opacity: 0; transition: opacity .12s; }
+  .summary-wrap:hover .icon-btn, .summary-wrap:focus-within .icon-btn { opacity: 1; }
+  .summary-edit { margin-bottom: 8px; line-height: 1.6; }
+
+  .notes { border-top: 1px solid var(--border); padding-top: 14px; }
+  .note { padding: 8px 0; font-size: 14px; }
+  .note + .note { border-top: 1px solid var(--surface-2); }
+  .note-kind { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+               text-transform: uppercase; padding: 1px 8px; border-radius: 999px; margin-bottom: 6px; }
+  .note-kind.assistant { color: var(--violet); background: var(--violet-soft); }
+  .note-kind.me { color: var(--teal); background: var(--teal-soft); }
+  .note-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+  .note-head .note-kind { margin-bottom: 0; }
+  .note .icon-btn { width: 24px; height: 24px; opacity: 0; transition: opacity .12s; }
+  .note:hover .icon-btn, .note:focus-within .icon-btn { opacity: 1; }
+  .edit-actions { display: flex; gap: 8px; align-items: center; }
+  .note-empty { color: var(--faint); font-size: 14px; padding: 4px 0; }
+
+  .panel-actions { display: flex; gap: 8px; margin-top: 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px 5px 10px;
+          border-radius: 999px; border: 1px solid transparent; font-size: 13px; }
+  .chip-note { color: var(--teal); background: var(--teal-soft); }
+  .chip-note:hover { background: rgba(79, 209, 197, 0.2); border-color: rgba(79, 209, 197, 0.35); }
+  .chip-ask { color: var(--violet); background: var(--violet-soft); }
+  .chip-ask:hover { background: rgba(167, 139, 250, 0.22); border-color: rgba(167, 139, 250, 0.4); }
+  .reveal { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 10px; }
+  .ask-row { display: flex; gap: 8px; width: 100%; }
+  .answer { width: 100%; font-size: 14px; }
+  .answer:empty { display: none; }
+  .answer-text { padding: 12px 14px; border-radius: var(--radius); border: 1px solid rgba(167, 139, 250, 0.25);
+                 background: linear-gradient(150deg, rgba(167, 139, 250, 0.10), transparent 60%), var(--surface-2); }
+  .answer-meta { font-size: 12px; color: var(--faint); margin: 8px 0; }
+
+  /* rendered model text */
+  .rich p { margin: 0 0 .7em; }
+  .rich ul, .rich ol { margin: 0 0 .8em; padding-left: 1.3em; }
+  .rich li { margin: .35em 0; padding-left: .2em; }
+  .rich li::marker { color: var(--accent-text); }
+  .rich ol li::marker { font-size: .9em; font-variant-numeric: tabular-nums; }
+  .rich > :last-child { margin-bottom: 0; }
+  /* Key terms: bold with a soft highlighter stroke underneath. */
+  .rich b { font-weight: 600; color: #fff; padding: 0 1px;
+            background: linear-gradient(transparent 62%, rgba(80, 125, 245, 0.32) 62%, rgba(155, 114, 242, 0.28) 92%, transparent 92%); }
+  /* Formulas and notation, wrapped in `backticks` by the model. */
+  .rich code.f { font-family: "Cambria Math", "STIX Two Math", "Segoe UI Symbol", "Segoe UI", serif;
+                 font-size: .97em; padding: 1px 6px; border-radius: 5px; white-space: normal;
+                 color: #e4dbff; background: var(--violet-soft); border: 1px solid rgba(167, 139, 250, 0.2); }
+
+  /* Tutor layer of a summary: not from the slides, so it looks different. */
+  .callout { margin: .8em 0 0; padding: 10px 14px; border-radius: var(--radius); font-size: .97em;
+             border: 1px solid var(--c-border); background: var(--c-bg); }
+  .callout + .callout { margin-top: 8px; }
+  .callout-label { display: block; margin-bottom: 2px; font-size: 11px; font-weight: 600;
+                   letter-spacing: .05em; text-transform: uppercase; color: var(--c-text); }
+  .callout-intuition { --c-text: var(--violet); --c-bg: var(--violet-soft); --c-border: rgba(167, 139, 250, 0.22); }
+  .callout-example { --c-text: var(--teal); --c-bg: var(--teal-soft); --c-border: rgba(79, 209, 197, 0.2); }
+  .callout-watch-out { --c-text: #f0b86e; --c-bg: rgba(240, 184, 110, 0.10); --c-border: rgba(240, 184, 110, 0.22); }
+
+  .page-link { display: inline-block; padding: 0 6px; margin: 0 1px; border-radius: 4px;
+               font-size: .85em; line-height: 1.5; white-space: nowrap; cursor: pointer;
+               color: var(--accent-text); background: var(--accent-soft);
+               font-variant-numeric: tabular-nums; transition: background .15s; }
+  .page-link:hover { background: rgba(70, 120, 225, 0.3); }
+
+  @media (hover: none) {
+    .topic .icon-btn, .summary-wrap .icon-btn, .note .icon-btn { opacity: 1; }
+    .chip-delete { width: 22px; padding: 0 8px 0 2px; }
+  }
+  @media (max-width: 640px) {
+    .main { padding: 28px 16px 64px; }
+    .panel { margin-left: 0; padding: 14px; }
+  }
 </style>
 </head>
 <body>
+<div class="layout">
 
-<h1>study assistant</h1>
+  <div class="main">
+    <div class="main-inner">
+      <h1>study assistant</h1>
 
-<div class="toolbar">
-  <select id="subject"></select>
-  <button onclick="addSubject()">+ subject</button>
-  <button onclick="addBlock()">+ block</button>
+      <div class="toolbar">
+        <select id="subject" aria-label="subject"></select>
+        <span class="spacer"></span>
+        <button class="ghost" onclick="addSubject()">+ subject</button>
+        <button class="ghost" onclick="addBlock()">+ block</button>
+      </div>
+
+      <div id="blocks"></div>
+    </div>
+  </div>
+
+  <div class="divider" id="divider"></div>
+
+  <div class="viewer" id="viewer">
+    <div class="viewer-bar">
+      <span id="viewer-name"></span>
+      <button class="icon-btn" onclick="closeViewer()" title="close" aria-label="close">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <iframe id="pdf-frame"></iframe>
+  </div>
+
 </div>
-
-<div id="blocks"></div>
-
 <script>
 const lastAnswer = {};
 
 const escapeHtml = text => text
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
-  .replace(/>/g, "&gt;");
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
 
-const renderAnswer = text => escapeHtml(text)
+const ICONS = {
+  rename: `<path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/>`,
+  delete: `<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>`,
+  edit: `<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 1 1 3 3L12 15l-4 1 1-4Z"/>`,
+  regenerate: `<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>`,
+  note: `<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>`,
+  ask: `<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>`,
+  outdent: `<path d="M21 5H11"/><path d="M21 12H11"/><path d="M21 19H11"/><path d="m7 8-4 4 4 4"/>`,
+};
+
+const icon = name => `<svg class="ico" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
+
+const iconButton = (name, label, onclick, extra = "") =>
+  `<button class="icon-btn ${extra}" title="${label}" aria-label="${label}" onclick="${onclick}">${icon(name)}</button>`;
+
+const renderWithPages = (text, pageSource) =>
+  renderAnswer(text).replace(/\[page (\d+)\]/g, (match, page) => {
+    const sourceId = pageSource[page];
+    if (!sourceId) return match;
+    return `<span class="page-link" onclick="openPdf(${sourceId}, ${page})">[page ${page}]</span>`;
+  });
+
+// PDF extraction turns ↔ into "→←", and the model sometimes writes |= for ⊨.
+const normalizeSymbols = text => text
+  .replace(/→\s?←/g, "↔")
+  .replace(/(^|\s)\|=(?=\s)/g, "$1⊨");
+
+// LaTeX the model writes: $$…$$ and \[…\] as blocks, \(…\) inline.
+const MATH = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)/g;
+
+// Lets KaTeX draw the LaTeX left in the text. The text was escaped before it
+// became HTML, and KaTeX builds its own markup, so this adds no raw model HTML.
+function renderMath(el) {
+  if (!window.renderMathInElement) return;
+  renderMathInElement(el, {
+    delimiters: [
+      { left: "$$", right: "$$", display: true },
+      { left: "\\[", right: "\\]", display: true },
+      { left: "\\(", right: "\\)", display: false },
+    ],
+    throwOnError: false,
+    strict: "ignore",
+  });
+}
+
+// `formula` → formula chip, **term** → bold, _x_ → italic.
+const renderInline = line => line
+  .replace(/`([^`]+)`/g, '<code class="f">$1</code>')
   .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-  .replace(/\n/g, "<br>");
+  .replace(/(^|[^\w])_([^_\s][^_]*?)_(?=[^\w]|$)/g, "$1<i>$2</i>");
+
+// Escapes first, then builds <p>, <ul> and <ol> by hand: consecutive "- " or
+// "1. " lines form one list, blank lines between items keep the list going.
+const CALLOUT = /^\s*(?:\*\*)?(intuition|example|watch out):(?:\*\*)?\s*(.*)$/i;
+
+const renderAnswer = text => {
+  const html = [];
+  let items = [];
+  let listType = "ul";
+  let lines = [];
+  let callout = null;
+
+  const flush = () => {
+    if (items.length) html.push(`<${listType}>${items.map(i => `<li>${renderInline(i)}</li>`).join("")}</${listType}>`);
+    const body = lines.map(renderInline).join("<br>");
+    if (lines.length && callout) {
+      html.push(`<div class="callout callout-${callout.kind}"><span class="callout-label">${callout.label}</span>${body}</div>`);
+    } else if (lines.length) {
+      html.push(`<p>${body}</p>`);
+    }
+    items = [];
+    lines = [];
+    callout = null;
+  };
+
+  // Math is cut out first so list, bold and symbol rules never touch it, and
+  // put back on one line so KaTeX finds it in a single text node.
+  const math = [];
+  const plain = text.replace(MATH, m => {
+    math.push(m.replace(/\s*\n\s*/g, " "));
+    return `\u0000${math.length - 1}\u0000`;
+  });
+
+  escapeHtml(normalizeSymbols(plain)).split(/\r?\n/).forEach(line => {
+    const item = line.match(/^\s*(?:[-*]|(\d+)[.)])\s+(.*)$/);
+    if (item) {
+      const type = item[1] ? "ol" : "ul";
+      if (lines.length || (items.length && type !== listType)) flush();
+      listType = type;
+      items.push(item[2]);
+    } else if (!line.trim()) {
+      if (lines.length) flush();
+    } else if (CALLOUT.test(line)) {
+      // "Intuition: ...", "Example: ...", "Watch out: ..." start a tutor callout.
+      const [, label, rest] = line.match(CALLOUT);
+      flush();
+      callout = { label: label.replace(/^./, c => c.toUpperCase()), kind: label.toLowerCase().replace(" ", "-") };
+      if (rest) lines.push(rest);
+    } else {
+      if (items.length) flush();
+      lines.push(line);
+    }
+  });
+  flush();
+
+  return html.join("").replace(/\u0000(\d+)\u0000/g, (_, i) => escapeHtml(math[i]));
+};
+
+function revealField(boxId, fieldId) {
+  const box = document.getElementById(boxId);
+  box.hidden = !box.hidden;
+  if (!box.hidden) document.getElementById(fieldId).focus();
+}
 
 async function togglePanel(topicId, blockId) {
   const panel = document.getElementById(`panel-${topicId}`);
@@ -90,24 +458,61 @@ async function togglePanel(topicId, blockId) {
 
   const topic = await fetch(`/topics/${topicId}`).then(r => r.json());
 
+  const pageSource = {};
+  topic.chunks.forEach(c => {
+    pageSource[c.page] = c.source_id;
+    sourceNames[c.source_id] = c.filename;
+  });
+
+  const summaryBlock = topic.summary
+    ? `<div class="summary-wrap">
+         <div class="summary rich" id="summary-${topicId}" data-raw="${escapeHtml(topic.summary)}">${renderWithPages(topic.summary, pageSource)}</div>
+         <div class="summary-bar">
+           <span>${topic.summary_origin === "manual" ? "edited by me" : "generated"}</span>
+           ${iconButton("edit", "edit summary", `editSummary(${topicId}, ${blockId})`)}
+           ${iconButton("regenerate", "regenerate summary", `makeSummary(${topicId}, ${blockId})`)}
+         </div>
+       </div>`
+    : `<div class="summary-wrap">
+         <div class="summary-bar">
+           <button class="magic" onclick="makeSummary(${topicId}, ${blockId})">generate summary</button>
+           <span id="summary-status-${topicId}"></span>
+         </div>
+       </div>`;
+
   const notes = topic.notes.length
     ? topic.notes.map(n => `
-        <div class="note">
-          <span class="note-kind">${n.kind === "ai_answer" ? "assistant" : "me"}</span>
-          ${renderAnswer(n.text)}
+        <div class="note" id="note-item-${n.note_id}" data-raw="${escapeHtml(n.text)}">
+          <div class="note-head">
+            ${n.kind === "ai_answer"
+              ? `<span class="note-kind assistant">assistant</span>`
+              : `<span class="note-kind me">me</span>`}
+            ${iconButton("edit", "edit note", `editNote(${n.note_id}, ${topicId}, ${blockId})`)}
+          </div>
+          <div class="rich" id="note-body-${n.note_id}">${renderWithPages(n.text, pageSource)}</div>
         </div>`).join("")
-    : `<div class="note" style="color:#999">no notes yet</div>`;
+    : `<div class="note-empty">no notes yet</div>`;
 
   panel.innerHTML = `
-    ${notes}
-    <textarea id="draft-${topicId}" rows="3" placeholder="in your own words..."></textarea>
-    <button onclick="saveNote(${topicId}, ${blockId})">save</button>
-    <div class="ask">
-      <input id="q-${topicId}" placeholder="ask about this topic...">
-      <button onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">ask</button>
+    ${summaryBlock}
+    <div class="notes">${notes}</div>
+    <div class="panel-actions">
+      <button class="chip chip-note" title="write a note" onclick="revealField('note-${topicId}', 'draft-${topicId}')">${icon("note")}note</button>
+      <button class="chip chip-ask" title="ask about this topic" onclick="revealField('ask-${topicId}', 'q-${topicId}')">${icon("ask")}ask</button>
+    </div>
+    <div class="reveal" id="note-${topicId}" hidden>
+      <textarea id="draft-${topicId}" rows="3" placeholder="in your own words..."></textarea>
+      <button class="primary" onclick="saveNote(${topicId}, ${blockId})">save</button>
+    </div>
+    <div class="reveal" id="ask-${topicId}" hidden>
+      <div class="ask-row">
+        <input id="q-${topicId}" placeholder="ask about this topic...">
+        <button class="primary" onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">ask</button>
+      </div>
       <div class="answer" id="answer-${topicId}"></div>
     </div>`;
 
+  renderMath(panel);
   panel.style.display = "block";
 }
 
@@ -133,7 +538,7 @@ async function askTopic(topicId, subjectId, blockId) {
   const question = input.value.trim();
   if (!question) return;
 
-  target.innerHTML = "thinking...";
+  target.innerHTML = `<div class="answer-meta">thinking...</div>`;
 
   const response = await fetch(`/subjects/${subjectId}/ask`, {
     method: "POST",
@@ -143,7 +548,7 @@ async function askTopic(topicId, subjectId, blockId) {
 
   if (!response.ok) {
     const error = await response.json();
-    target.innerHTML = `failed: ${escapeHtml(error.detail)}`;
+    target.innerHTML = `<div class="answer-meta">failed: ${escapeHtml(error.detail)}</div>`;
     return;
   }
 
@@ -153,13 +558,24 @@ async function askTopic(topicId, subjectId, blockId) {
   const pages = data.sources.map(s => s.page).join(", ");
 
   target.innerHTML = `
-    <div class="answer-text">${renderAnswer(data.answer)}</div>
+    <div class="answer-text rich" id="answer-text-${topicId}">${renderAnswer(data.answer)}</div>
     <div class="answer-meta">pages ${pages}</div>
-    <button onclick="saveAnswer(${topicId}, ${blockId})">save as note</button>`;
+    <div class="edit-actions">
+      <button onclick="editAnswer(${topicId}, this)">edit</button>
+      <button onclick="saveAnswer(${topicId}, ${blockId})">save as note</button>
+    </div>`;
+  renderMath(target);
+}
+
+function editAnswer(topicId, button) {
+  document.getElementById(`answer-text-${topicId}`).outerHTML =
+    `<textarea class="summary-edit" id="answer-edit-${topicId}" rows="10">${escapeHtml(lastAnswer[topicId])}</textarea>`;
+  button.hidden = true;
 }
 
 async function saveAnswer(topicId, blockId) {
-  const text = lastAnswer[topicId];
+  const edited = document.getElementById(`answer-edit-${topicId}`);
+  const text = edited ? edited.value.trim() : lastAnswer[topicId];
   if (!text) return;
 
   await fetch(`/topics/${topicId}/notes`, {
@@ -172,16 +588,71 @@ async function saveAnswer(topicId, blockId) {
   await togglePanel(topicId, blockId);
 }
 
+async function reopenPanel(topicId, blockId) {
+  await togglePanel(topicId, blockId);
+  await togglePanel(topicId, blockId);
+}
+
+function editNote(noteId, topicId, blockId) {
+  const raw = document.getElementById(`note-item-${noteId}`).dataset.raw;
+  document.getElementById(`note-body-${noteId}`).outerHTML = `
+    <textarea class="summary-edit" id="note-edit-${noteId}" rows="8">${escapeHtml(raw)}</textarea>
+    <div class="edit-actions">
+      <button class="primary" onclick="saveNoteEdit(${noteId}, ${topicId}, ${blockId})">save</button>
+      <button class="ghost" onclick="reopenPanel(${topicId}, ${blockId})">cancel</button>
+    </div>`;
+}
+
+async function saveNoteEdit(noteId, topicId, blockId) {
+  const text = document.getElementById(`note-edit-${noteId}`).value.trim();
+  if (!text) return;
+
+  const response = await fetch(`/notes/${noteId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    alert(`failed: ${error.detail}`);
+    return;
+  }
+
+  await reopenPanel(topicId, blockId);
+}
+
 async function loadSubjects() {
   const subjects = await fetch("/subjects").then(r => r.json());
   const select = document.getElementById("subject");
 
   select.innerHTML = subjects
-    .map(s => `<option value="${s.id}">${s.name}</option>`)
+    .map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`)
     .join("");
 
-  select.onchange = () => loadBlocks(select.value);
-  if (subjects.length) loadBlocks(subjects[0].id);
+  select.onchange = () => {
+    rememberSubject(select.value);
+    loadBlocks(select.value);
+  };
+
+  // Reopen the subject from last time, if it still exists.
+  const saved = savedSubject();
+  const start = subjects.find(s => String(s.id) === saved) || subjects[0];
+  if (start) {
+    select.value = start.id;
+    loadBlocks(start.id);
+  }
+}
+
+const SUBJECT_KEY = "study-assistant:subject";
+
+// localStorage can be unavailable (private window, blocked site data); the page works without it.
+function savedSubject() {
+  try { return localStorage.getItem(SUBJECT_KEY); } catch { return null; }
+}
+
+function rememberSubject(subjectId) {
+  try { localStorage.setItem(SUBJECT_KEY, String(subjectId)); } catch {}
 }
 
 async function loadBlocks(subjectId) {
@@ -202,8 +673,8 @@ async function loadBlocks(subjectId) {
     return `
       <div class="block">
         <div class="block-head" onclick="toggleBlock(${b.block_id})">
-            <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${b.name}</span>
-            <span class="block-meta">${b.topics} topics</span>
+            <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${escapeHtml(b.name)}</span>
+            <span class="block-meta">${b.topics} topics<span class="formula-progress" id="formulas-${b.block_id}">${formulaLabel(b)}</span></span>
         </div>
         <div class="bar-track" style="width: ${(b.weight / maxWeight) * 100}%">
           <div class="bar">
@@ -215,6 +686,30 @@ async function loadBlocks(subjectId) {
         <div class="topics" id="topics-${b.block_id}"></div>
       </div>`;
   }).join("");
+
+  watchFormulas(subjectId, blocks);
+}
+
+// Shown only while the background worker still has formula pages of this block to re-read.
+const formulaLabel = b =>
+  b.formulas && b.formulas.done < b.formulas.pages ? ` · formulas ${b.formulas.done}/${b.formulas.pages}` : "";
+
+let formulaTimer = null;
+
+// Updates just the progress labels, so open blocks and panels stay as they are.
+function watchFormulas(subjectId, blocks) {
+  clearTimeout(formulaTimer);
+  if (!blocks.some(b => formulaLabel(b))) return;
+
+  formulaTimer = setTimeout(async () => {
+    if (document.getElementById("subject").value !== String(subjectId)) return;
+    const fresh = await fetch(`/subjects/${subjectId}/blocks`).then(r => r.json());
+    fresh.forEach(b => {
+      const label = document.getElementById(`formulas-${b.block_id}`);
+      if (label) label.textContent = formulaLabel(b);
+    });
+    watchFormulas(subjectId, fresh);
+  }, 60000);
 }
 
 const NEXT_STATUS = { new: "known", known: "review", review: "new" };
@@ -229,47 +724,257 @@ async function toggleBlock(blockId) {
     return;
   }
 
-  const topics = await fetch(`/blocks/${blockId}/topics`).then(r => r.json());
-  const ids = new Set(topics.map(t => t.id));
-  const isRoot = t => t.parent_id === null || !ids.has(t.parent_id);
-  
-  const children = {};
-  topics.forEach(t => {
-    if (isRoot(t)) return;
-    children[t.parent_id] = children[t.parent_id] || [];
-    children[t.parent_id].push(t);
-  });
+  const [topics, files] = await Promise.all([
+    fetch(`/blocks/${blockId}/topics`).then(r => r.json()),
+    fetch(`/blocks/${blockId}/files`).then(r => r.json()),
+  ]);
 
-  const row = (t, isChild) => `
-    <div class="topic ${isChild ? "child" : ""}">
-      <span class="dot dot-${t.status}" onclick="cycleStatus(${t.id}, '${t.status}', ${blockId})"></span>
-      <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId})">${t.title}</span>
+  const row = (t, isChild, awayFrom) => `
+    <div class="topic ${isChild ? "child" : ""}" draggable="true"
+         ondragstart="startTopicDrag(event, ${t.id})" ondragend="endTopicDrag()"
+         ondragover="dragOverTarget(event)" ondragleave="dragLeaveTarget(event)"
+         ondrop="dropTopic(event, ${isChild ? t.parent_id : t.id}, ${blockId})"
+         data-drop-label="${isChild ? "drop here into this group" : "drop here as a subtopic"}">
+      <span class="dot dot-${t.status}" title="${t.status}" onclick="cycleStatus(${t.id}, '${t.status}', ${blockId})"></span>
+      <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId})">${escapeHtml(t.title)}</span>
+      ${awayFrom ? `<span class="topic-parent" title="subtopic of ${escapeHtml(awayFrom)}">↳ ${escapeHtml(awayFrom)}</span>` : ""}
       <span class="topic-weight">${t.weight}</span>
-      <span class="pen" onclick="renameTopic(${t.id}, ${blockId})">✎</span>
-      <span class="kill" onclick="deleteTopic(${t.id}, ${blockId})">×</span>
+      ${isChild ? iconButton("outdent", "make it a top-level topic", `makeRoot(${t.id}, ${blockId})`) : ""}
+      ${iconButton("rename", "rename", `renameTopic(${t.id}, ${blockId})`)}
+      ${iconButton("delete", "delete", `deleteTopic(${t.id}, ${blockId})`, "danger")}
     </div>
     <div class="panel" id="panel-${t.id}" style="display: none"></div>`;
 
+  // Hidden behind "+ upload" once the block has files; open right away in an empty block.
   const uploadRow = `
-    <div class="upload">
+    <div class="upload" id="upload-${blockId}" ${files.length ? "hidden" : ""}>
       <input type="file" id="file-${blockId}" accept="application/pdf">
       <select id="type-${blockId}">
         <option value="lecture">lecture</option>
         <option value="homework">homework</option>
         <option value="concept">concept</option>
+        <option value="my_solution">my solution</option>
         <option value="past_exam">past exam</option>
         <option value="other">other</option>
       </select>
       <button onclick="uploadFile(${blockId})">upload</button>
       <span class="progress" id="progress-${blockId}"></span>
     </div>`;
-    
-  box.innerHTML = uploadRow + topics
-    .filter(isRoot)
-    .map(t => row(t, false) + (children[t.id] || []).map(c => row(c, true)).join(""))
-    .join("");
+
+  const missing = topics.filter(t => t.has_summary === false).length;
+  const bulkRow = `
+    <div class="bulk">
+      <button class="magic" id="bulk-btn-${blockId}" onclick="summarizeBlock(${blockId})" ${missing ? "" : "disabled"}>
+        ${bulkSummaries[blockId] ? "stop" : missing ? `generate summaries (${missing} missing)` : "all topics have summaries"}
+      </button>
+      <span class="progress" id="bulk-${blockId}"></span>
+    </div>`;
+
+  const rootZone = `
+    <div class="drop-root"
+         ondragover="dragOverTarget(event)" ondragleave="dragLeaveTarget(event)"
+         ondrop="dropTopic(event, null, ${blockId})">drop here to make it a top-level topic</div>`;
+
+  box.innerHTML = renderMaterials(files, blockId) + uploadRow + bulkRow + orderTopics(topics)
+    .map(({ topic, isChild, awayFrom }) => row(topic, isChild, awayFrom))
+    .join("") + rootZone;
 
   arrow.textContent = "▾";
+}
+
+// One row per file type, in this order; empty rows are not shown.
+const MATERIAL_ROWS = [
+  { type: "lecture", label: "Lecture", icon: "▤" },
+  { type: "concept", label: "Concept", icon: "◇" },
+  { type: "homework", label: "Homework", icon: "✎" },
+  { type: "my_solution", label: "Mine", icon: "✍" },
+  { type: "past_exam", label: "Exam", icon: "★" },
+  { type: "other", label: "Other", icon: "•" },
+];
+const MATERIALS_VISIBLE = 5;
+
+function renderMaterials(files, blockId) {
+  const rows = MATERIAL_ROWS.map(({ type, label, icon }) => {
+    const ofType = files.filter(f => f.type === type);
+    if (!ofType.length) return "";
+
+    const chips = ofType.map((f, i) => {
+      sourceNames[f.source_id] = f.filename;
+      const name = escapeHtml(f.filename.replace(/\.pdf$/i, ""));
+      return `
+        <span class="chip-file chip-${type}" ${i >= MATERIALS_VISIBLE ? "hidden" : ""}>
+          <button class="chip-open" title="${escapeHtml(f.filename)}" ${f.has_pdf ? "" : "disabled"}
+                  onclick="openPdf(${f.source_id}, 1)">
+            <span class="chip-icon">${icon}</span><span class="chip-name">${name}</span>
+          </button>
+          <button class="chip-delete" title="delete file" aria-label="delete file"
+                  onclick="deleteSource(${f.source_id}, ${blockId})">×</button>
+        </span>`;
+    }).join("");
+
+    const hiddenCount = ofType.length - MATERIALS_VISIBLE;
+    const more = hiddenCount > 0
+      ? `<button class="chip-more" onclick="showAllMaterials(this)">+${hiddenCount}</button>`
+      : "";
+
+    return `
+      <div class="materials-row">
+        <span class="materials-label">${label}</span>${chips}${more}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="materials">
+      <div class="materials-head">
+        <span class="materials-title">Materials</span>
+        <button class="ghost" onclick="revealField('upload-${blockId}', 'file-${blockId}')">+ upload</button>
+      </div>
+      ${rows}
+    </div>`;
+}
+
+async function deleteSource(sourceId, blockId) {
+  const impact = await fetch(`/sources/${sourceId}/delete-preview`).then(r => r.json());
+
+  let message = `удалить файл «${impact.filename}»?`;
+  if (impact.topics) {
+    message += `\n\nВместе с ним удалятся темы, которые есть только в этом файле: ${impact.topics}`;
+    if (impact.notes) message += `, и заметки к ним: ${impact.notes}`;
+    message += ".";
+  }
+  if (!confirm(message)) return;
+
+  const response = await fetch(`/sources/${sourceId}`, { method: "DELETE" });
+  if (!response.ok) {
+    const error = await response.json();
+    alert(`failed: ${error.detail}`);
+    return;
+  }
+
+  // Topic counts and progress bars change too, so the whole block list is redrawn.
+  await refresh(blockId);
+}
+
+function showAllMaterials(button) {
+  button.parentElement.querySelectorAll(".chip-file[hidden]").forEach(chip => { chip.hidden = false; });
+  button.remove();
+}
+
+// Lays topics out in page order. A group (top-level topic plus its subtopics)
+// starts at its earliest page, so a parent rises to its earliest subtopic.
+// A subtopic stays under its parent until another top-level topic comes first
+// by page; after that it sits at its own page, marked with its parent's title.
+function orderTopics(topics) {
+  const byId = Object.fromEntries(topics.map(t => [t.id, t]));
+  const isRoot = t => t.parent_id === null || !byId[t.parent_id];
+  const page = t => t.first_page ?? Infinity;
+
+  // The seen set guards against a parent cycle in the data.
+  const rootOf = t => {
+    const seen = new Set();
+    while (!isRoot(t) && !seen.has(t.id)) {
+      seen.add(t.id);
+      t = byId[t.parent_id];
+    }
+    return t;
+  };
+
+  const groupStart = {};
+  topics.forEach(t => {
+    const root = rootOf(t);
+    groupStart[root.id] = Math.min(groupStart[root.id] ?? Infinity, page(t));
+  });
+
+  // [own position, group position, top-level first]. On equal pages a subtopic
+  // of an earlier group comes before a new top-level topic.
+  const key = t => {
+    const group = groupStart[rootOf(t).id];
+    return isRoot(t) ? [group, group, 0] : [page(t), group, 1];
+  };
+
+  const ordered = topics
+    .map(t => ({ t, k: key(t) }))
+    .sort((a, b) => {
+      for (let i = 0; i < a.k.length; i++) {
+        if (a.k[i] !== b.k[i]) return a.k[i] < b.k[i] ? -1 : 1;
+      }
+      return 0;
+    })
+    .map(x => x.t);
+
+  let current = null;
+  return ordered.map(topic => {
+    if (isRoot(topic)) {
+      current = topic;
+      return { topic, isChild: false, awayFrom: null };
+    }
+    const underParent = current !== null && topic.parent_id === current.id;
+    return { topic, isChild: true, awayFrom: underParent ? null : byId[topic.parent_id].title };
+  });
+}
+
+// Running bulk generations by block id; setting `stop` ends the loop after the current topic.
+const bulkSummaries = {};
+
+// The block can be collapsed and reopened while this runs, so look the elements up every time.
+function setBulkStatus(blockId, text, failed = false) {
+  const status = document.getElementById(`bulk-${blockId}`);
+  if (!status) return;
+  status.className = failed ? "progress failed" : "progress";
+  status.textContent = text;
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function summarizeBlock(blockId) {
+  if (bulkSummaries[blockId]) {
+    bulkSummaries[blockId].stop = true;
+    setBulkStatus(blockId, "stopping after the current topic...");
+    return;
+  }
+
+  const run = { stop: false };
+  bulkSummaries[blockId] = run;
+  const button = document.getElementById(`bulk-btn-${blockId}`);
+  if (button) button.textContent = "stop";
+
+  const topics = await fetch(`/blocks/${blockId}/topics`).then(r => r.json());
+  const todo = orderTopics(topics).map(x => x.topic).filter(t => t.has_summary === false);
+  let written = 0;
+  const failed = [];
+
+  for (const [i, topic] of todo.entries()) {
+    if (run.stop) break;
+    setBulkStatus(blockId, `${i + 1} / ${todo.length} · ${topic.title}`);
+
+    // Retries the same topic while Groq says the rate limit is reached.
+    for (let attempt = 1; ; attempt++) {
+      const response = await fetch(`/topics/${topic.id}/summary`, { method: "POST" });
+
+      if (response.status === 429 && attempt <= 5 && !run.stop) {
+        const wait = Number(response.headers.get("Retry-After")) || 20 * attempt;
+        setBulkStatus(blockId, `${i + 1} / ${todo.length} · rate limit, waiting ${Math.ceil(wait)}s...`);
+        await sleep(wait * 1000);
+        continue;
+      }
+
+      if (response.ok) written++;
+      else failed.push(topic.title);
+      break;
+    }
+  }
+
+  delete bulkSummaries[blockId];
+  const stopped = run.stop ? "stopped · " : "";
+  const tail = failed.length ? ` · failed: ${failed.join(", ")}` : "";
+  setBulkStatus(blockId, `${stopped}${written} written${tail}`, failed.length > 0);
+
+  const left = todo.length - written;
+  const again = document.getElementById(`bulk-btn-${blockId}`);
+  if (again) {
+    again.textContent = left ? `generate summaries (${left} missing)` : "all topics have summaries";
+    again.disabled = !left;
+  }
 }
 
 async function patchTopic(topicId, body) {
@@ -285,6 +990,52 @@ async function patchTopic(topicId, body) {
     return false;
   }
   return true;
+}
+
+// Custom type so files dragged in from the desktop are not treated as topics.
+const TOPIC_DRAG_TYPE = "application/x-topic-id";
+
+function startTopicDrag(event, topicId) {
+  event.dataTransfer.setData(TOPIC_DRAG_TYPE, String(topicId));
+  event.dataTransfer.effectAllowed = "move";
+  event.currentTarget.classList.add("dragging");
+  // Changing layout synchronously in dragstart can cancel the drag in Chrome.
+  setTimeout(() => document.body.classList.add("dragging-topic"));
+}
+
+function endTopicDrag() {
+  document.body.classList.remove("dragging-topic");
+  document.querySelectorAll(".dragging, .drop-target")
+    .forEach(el => el.classList.remove("dragging", "drop-target"));
+}
+
+function dragOverTarget(event) {
+  if (!event.dataTransfer.types.includes(TOPIC_DRAG_TYPE)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  event.currentTarget.classList.add("drop-target");
+}
+
+function dragLeaveTarget(event) {
+  if (event.currentTarget.contains(event.relatedTarget)) return;
+  event.currentTarget.classList.remove("drop-target");
+}
+
+async function dropTopic(event, parentId, blockId) {
+  event.preventDefault();
+  const topicId = Number(event.dataTransfer.getData(TOPIC_DRAG_TYPE));
+  endTopicDrag();
+  if (!topicId) return;
+
+  if (await patchTopic(topicId, { parent_id: parentId })) {
+    await refresh(blockId);
+  }
+}
+
+async function makeRoot(topicId, blockId) {
+  if (await patchTopic(topicId, { parent_id: null })) {
+    await refresh(blockId);
+  }
 }
 
 async function refresh(blockId) {
@@ -333,6 +1084,7 @@ async function addSubject() {
   }
 
   const subject = await response.json();
+  rememberSubject(subject.id);
   await loadSubjects();
   document.getElementById("subject").value = subject.id;
   await loadBlocks(subject.id);
@@ -390,9 +1142,16 @@ async function uploadFile(blockId) {
   }
 
   const result = await response.json();
-  progress.textContent = `${result.chunks} chunks (${result.weak_chunks} weak) — processing...`;
   input.value = "";
 
+  // Only lectures get a processing job; other files are just stored.
+  if (result.job_id === null) {
+    progress.textContent = "saved";
+    await refresh(blockId);
+    return;
+  }
+
+  progress.textContent = `${result.chunks} chunks (${result.weak_chunks} weak) — processing...`;
   watchJob(result.job_id, blockId, progress);
 }
 
@@ -414,6 +1173,80 @@ async function watchJob(jobId, blockId, progress) {
   progress.textContent = "done";
   await refresh(blockId);
 }
+async function makeSummary(topicId, blockId) {
+  const status = document.getElementById(`summary-status-${topicId}`);
+  if (status) status.textContent = "writing...";
+
+  const response = await fetch(`/topics/${topicId}/summary`, { method: "POST" });
+
+  if (!response.ok) {
+    const error = await response.json();
+    if (status) status.textContent = `failed: ${error.detail}`;
+    return;
+  }
+
+  const result = await response.json();
+  if (!result.saved) {
+    alert("you edited this summary by hand, so it was not overwritten");
+    return;
+  }
+
+  await togglePanel(topicId, blockId);
+  await togglePanel(topicId, blockId);
+}
+
+function editSummary(topicId, blockId) {
+  const box = document.getElementById(`summary-${topicId}`);
+  const current = box.dataset.raw;
+
+  box.outerHTML = `
+    <textarea class="summary-edit" id="edit-${topicId}" rows="10">${escapeHtml(current)}</textarea>
+    <button class="primary" onclick="saveSummary(${topicId}, ${blockId})">save summary</button>`;
+}
+
+async function saveSummary(topicId, blockId) {
+  const text = document.getElementById(`edit-${topicId}`).value;
+
+  const ok = await patchTopic(topicId, { summary: text });
+  if (ok) {
+    await togglePanel(topicId, blockId);
+    await togglePanel(topicId, blockId);
+  }
+}
+const sourceNames = {};
+
+function openPdf(sourceId, page) {
+  const frame = document.getElementById("pdf-frame");
+  frame.src = `/sources/${sourceId}/pdf?t=${Date.now()}#page=${page}`;
+  document.getElementById("viewer-name").textContent = sourceNames[sourceId] || "";
+  document.getElementById("viewer").classList.add("open");
+  document.getElementById("divider").classList.add("open");
+}
+
+function closeViewer() {
+  document.getElementById("viewer").classList.remove("open");
+  document.getElementById("divider").classList.remove("open");
+  document.getElementById("pdf-frame").src = "";
+}
+
+document.getElementById("divider").onmousedown = event => {
+  event.preventDefault();
+
+  const move = e => {
+    const percent = ((window.innerWidth - e.clientX) / window.innerWidth) * 100;
+    if (percent > 15 && percent < 85) {
+      document.getElementById("viewer").style.width = `${percent}%`;
+    }
+  };
+
+  const stop = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", stop);
+  };
+
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", stop);
+};
 loadSubjects();
 </script>
 </body>

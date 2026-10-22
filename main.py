@@ -1,12 +1,13 @@
 import os
 
 from dotenv import load_dotenv
-from groq import Groq
+from groq import Groq, RateLimitError
 
 import hashlib
+from contextlib import asynccontextmanager
 from enum import Enum
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Response
 from pydantic import BaseModel
 
 from db import get_connection
@@ -20,15 +21,23 @@ from fastapi.staticfiles import StaticFiles
 
 from pipeline import run_pipeline
 
-app = FastAPI(title="Study Assistant")
+from summarizer import EmptySummaryError, summarize_topic
+from math_pages import enqueue_math_pages, start_worker
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_worker()
+    yield
+
+
+app = FastAPI(title="Study Assistant", lifespan=lifespan)
 
 load_dotenv()
 
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 ASK_MODEL = "openai/gpt-oss-20b"
 
-ASK_SYSTEM_PROMPT = """You help a student understand their own lecture material.
-
+ASK_SYSTEM_PROMPT = r"""You help a student understand their own lecture material.
 Answer in two clearly separated and labelled parts.
 
 PART 1 — From the lecture:
@@ -70,13 +79,17 @@ class NoteIn(BaseModel):
     kind: str = "own_explanation"
 
 
-TOPIC_STATUSES = ("new", "known", "review")
+class NotePatch(BaseModel):
+    text: str
 
+
+TOPIC_STATUSES = ("new", "known", "review")
 
 class TopicPatch(BaseModel):
     title: str | None = None
     parent_id: int | None = None
     status: str | None = None
+    summary: str | None = None
 
 class AskIn(BaseModel):
     question: str
@@ -124,7 +137,12 @@ class SourceType(str, Enum):
     homework = "homework"
     past_exam = "past_exam"
     concept = "concept"
+    my_solution = "my_solution"
     other = "other"
+
+
+# Only lectures build topics on upload; the rest is stored and analysed on request.
+AUTO_PROCESSED_TYPES = {SourceType.lecture}
     
 @app.post("/subjects/{subject_id}/sources")
 def upload_source(
@@ -296,7 +314,8 @@ def get_topic(topic_id: int):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.id, t.title, t.parent_id, p.title, t.subject_id, t.status "
+                "SELECT t.id, t.title, t.parent_id, p.title, t.subject_id, t.status, "
+                "t.summary, t.summary_origin "                
                 "FROM topics t LEFT JOIN topics p ON p.id = t.parent_id "
                 "WHERE t.id = %s",
                 (topic_id,),
@@ -306,7 +325,7 @@ def get_topic(topic_id: int):
                 raise HTTPException(status_code=404, detail=f"topic {topic_id} not found")
 
             cur.execute(
-                "SELECT c.id, c.page_number, c.text, s.filename, s.type "
+                "SELECT c.id, c.page_number, c.text, s.filename, s.type, s.id "
                 "FROM chunks c JOIN topic_chunks tc ON tc.chunk_id = c.id "
                 "JOIN sources s ON s.id = c.source_id "
                 "WHERE tc.topic_id = %s ORDER BY s.id, c.page_number",
@@ -319,6 +338,7 @@ def get_topic(topic_id: int):
                     "text": r[2],
                     "filename": r[3],
                     "source_type": r[4],
+                    "source_id": r[5],
                 }
                 
                 for r in cur.fetchall()
@@ -343,6 +363,8 @@ def get_topic(topic_id: int):
         "status": row[5],
         "chunks": chunks,
         "notes": notes,
+        "summary": row[6],
+        "summary_origin": row[7],
     }
 
 
@@ -364,6 +386,24 @@ def add_note(topic_id: int, note: NoteIn):
             note_id, created_at = cur.fetchone()
 
     return {"note_id": note_id, "topic_id": topic_id, "created_at": created_at}
+
+
+@app.patch("/notes/{note_id}")
+def update_note(note_id: int, patch: NotePatch):
+    if not patch.text.strip():
+        raise HTTPException(status_code=400, detail="note text cannot be empty")
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notes SET text = %s WHERE id = %s RETURNING topic_id",
+                (patch.text.strip(), note_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"note {note_id} not found")
+
+    return {"note_id": note_id, "topic_id": row[0]}
 
 
 @app.patch("/topics/{topic_id}")
@@ -398,6 +438,11 @@ def update_topic(topic_id: int, patch: TopicPatch):
                     "UPDATE topics SET status = %s WHERE id = %s",
                     (patch.status, topic_id),
                 )
+            if "summary" in fields:
+                cur.execute(
+                    "UPDATE topics SET summary = %s, summary_origin = 'manual' WHERE id = %s",
+                    (patch.summary, topic_id),
+                )            
             if "parent_id" in fields:
                 if patch.parent_id is not None:
                     if patch.parent_id == topic_id:
@@ -415,6 +460,13 @@ def update_topic(topic_id: int, patch: TopicPatch):
                         raise HTTPException(status_code=400, detail="parent belongs to another subject")
                     if parent[0] is not None:
                         raise HTTPException(status_code=400, detail="parent already has a parent, tree is two levels")
+
+                    cur.execute("SELECT 1 FROM topics WHERE parent_id = %s LIMIT 1", (topic_id,))
+                    if cur.fetchone() is not None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="this topic has subtopics, move them out first, tree is two levels",
+                        )
 
                 cur.execute(
                     "UPDATE topics SET parent_id = %s, parent_origin = 'manual' WHERE id = %s",
@@ -503,7 +555,9 @@ def list_blocks(subject_id: int):
                 "count(DISTINCT tc.chunk_id) AS weight, "
                 "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'new') AS fresh, "
                 "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'known') AS known, "
-                "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'review') AS review "
+                "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'review') AS review, "
+                "count(DISTINCT c.id) FILTER (WHERE c.formula_status IS NOT NULL) AS formula_pages, "
+                "count(DISTINCT c.id) FILTER (WHERE c.formula_status IN ('done', 'failed')) AS formula_done "
                 "FROM blocks b "
                 "LEFT JOIN sources s ON s.block_id = b.id "
                 "LEFT JOIN chunks c ON c.source_id = s.id "
@@ -522,6 +576,7 @@ def list_blocks(subject_id: int):
                     "topics": r[4],
                     "weight": r[5],
                     "status": {"new": r[6], "known": r[7], "review": r[8]},
+                    "formulas": {"pages": r[9], "done": r[10]},
                 }
                 for r in cur.fetchall()
             ]
@@ -533,7 +588,8 @@ def list_block_topics(block_id: int):
             cur.execute(
                 "SELECT t.id, t.title, t.parent_id, t.status, "
                 "count(DISTINCT tc.chunk_id) AS weight, "
-                "min(c.page_number) AS first_page "
+                "min(c.page_number) AS first_page, "
+                "t.summary IS NOT NULL AS has_summary "
                 "FROM topics t "
                 "JOIN topic_chunks tc ON tc.topic_id = t.id "
                 "JOIN chunks c ON c.id = tc.chunk_id "
@@ -550,6 +606,7 @@ def list_block_topics(block_id: int):
                     "status": r[3],
                     "weight": r[4],
                     "first_page": r[5],
+                    "has_summary": r[6],
                 }
                 for r in cur.fetchall()
             ]
@@ -570,6 +627,74 @@ def delete_topic(topic_id: int):
             cur.execute("DELETE FROM topics WHERE id = %s", (topic_id,))
 
     return {"deleted": topic_id, "title": title}
+
+def topics_only_from(cur, source_id: int) -> list[int]:
+    """Topics whose every linked chunk belongs to this source."""
+    cur.execute(
+        "SELECT DISTINCT tc.topic_id FROM topic_chunks tc "
+        "JOIN chunks c ON c.id = tc.chunk_id WHERE c.source_id = %s "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM topic_chunks tc2 JOIN chunks c2 ON c2.id = tc2.chunk_id "
+        "  WHERE tc2.topic_id = tc.topic_id AND c2.source_id <> %s)",
+        (source_id, source_id),
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+@app.get("/sources/{source_id}/delete-preview")
+def preview_source_deletion(source_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT filename FROM sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+
+            topic_ids = topics_only_from(cur, source_id)
+            cur.execute("SELECT count(*) FROM notes WHERE topic_id = ANY(%s)", (topic_ids,))
+            notes = cur.fetchone()[0]
+
+    return {"source_id": source_id, "filename": row[0], "topics": len(topic_ids), "notes": notes}
+
+
+@app.delete("/sources/{source_id}")
+def delete_source(source_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT filename FROM sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+
+            cur.execute(
+                "SELECT 1 FROM jobs WHERE source_id = %s AND status = 'running'", (source_id,)
+            )
+            if cur.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail="this file is still being processed, delete it when that finishes",
+                )
+
+            # Collected before the links go, while it is still known where topics came from.
+            topic_ids = topics_only_from(cur, source_id)
+
+            cur.execute(
+                "DELETE FROM topic_chunks WHERE chunk_id IN "
+                "(SELECT id FROM chunks WHERE source_id = %s)",
+                (source_id,),
+            )
+            if topic_ids:
+                cur.execute("UPDATE topics SET parent_id = NULL WHERE parent_id = ANY(%s)", (topic_ids,))
+                for table in ("notes", "techniques", "struggles", "exam_questions"):
+                    cur.execute(f"DELETE FROM {table} WHERE topic_id = ANY(%s)", (topic_ids,))
+                cur.execute("DELETE FROM topics WHERE id = ANY(%s)", (topic_ids,))
+
+            for table in ("techniques", "exam_questions", "chunks", "jobs"):
+                cur.execute(f"DELETE FROM {table} WHERE source_id = %s", (source_id,))
+            cur.execute("DELETE FROM sources WHERE id = %s", (source_id,))
+
+    return {"deleted": source_id, "filename": row[0], "topics_removed": len(topic_ids)}
+
 
 app.mount("/app", StaticFiles(directory="static", html=True), name="static")
 
@@ -648,13 +773,21 @@ def upload_to_block(
                      chunk["is_weak"], chunk["drawings_count"]),
                 )
 
-            cur.execute(
-                "INSERT INTO jobs (source_id) VALUES (%s) RETURNING id",
-                (source_id,),
-            )
-            job_id = cur.fetchone()[0]
+            job_id = None
+            if source_type in AUTO_PROCESSED_TYPES:
+                cur.execute(
+                    "INSERT INTO jobs (source_id) VALUES (%s) RETURNING id",
+                    (source_id,),
+                )
+                job_id = cur.fetchone()[0]
 
-    background_tasks.add_task(run_pipeline, job_id, source_id, subject_id, block_id)
+    # Runs after the response, when the chunks above are committed and visible.
+    if job_id is not None:
+        background_tasks.add_task(run_pipeline, job_id, source_id, subject_id, block_id)
+    elif source_type != SourceType.my_solution:
+        # Fix formulas now, so a later analyse reads clean text. Own solutions are
+        # never analysed by default, so they cost no vision tokens.
+        background_tasks.add_task(enqueue_math_pages, source_id)
 
     return {
         "job_id": job_id,
@@ -684,3 +817,74 @@ def get_job(job_id: int):
         "status": row[3],
         "message": row[4],
     }
+@app.post("/topics/{topic_id}/summary")
+def generate_summary(topic_id: int):
+    try:
+        return summarize_topic(topic_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except EmptySummaryError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    except RateLimitError as error:
+        retry_after = error.response.headers.get("retry-after")
+        raise HTTPException(
+            status_code=429,
+            detail="Groq rate limit reached, try again later",
+            headers={"Retry-After": retry_after} if retry_after else None,
+        )
+@app.get("/sources/{source_id}/pdf")
+def get_source_pdf(source_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT filename, pdf FROM sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+    if row[1] is None:
+        raise HTTPException(status_code=404, detail="no PDF stored for this file")
+
+    return Response(
+        content=bytes(row[1]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{row[0]}"'},
+    )
+
+
+@app.get("/blocks/{block_id}/files")
+def list_block_files(block_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, filename, type, (pdf IS NOT NULL) "
+                "FROM sources WHERE block_id = %s ORDER BY id",
+                (block_id,),
+            )
+            return [
+                {"source_id": r[0], "filename": r[1], "type": r[2], "has_pdf": r[3]}
+                for r in cur.fetchall()
+            ]
+
+
+@app.post("/sources/{source_id}/pdf")
+def attach_pdf(source_id: int, file: UploadFile = File(...)):
+    data = file.file.read()
+    content_hash = hashlib.sha256(data).hexdigest()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT content_hash FROM sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+            if row[0] != content_hash:
+                raise HTTPException(
+                    status_code=400,
+                    detail="this is a different file than the one originally uploaded",
+                )
+
+            cur.execute("UPDATE sources SET pdf = %s WHERE id = %s", (data, source_id))
+            conn.commit()
+
+    return {"source_id": source_id, "bytes": len(data)}
