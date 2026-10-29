@@ -65,7 +65,11 @@ class EmptySummaryError(Exception):
 
 
 # Fixes for broken slide characters that the model may still copy outside the math.
-SYMBOL_FIXES = {"‑": "-", "‐": "-", "→←": "↔", " |= ": " ⊨ "}
+SYMBOL_FIXES = {
+    "‑": "-", "‐": "-", "→←": "↔", " |= ": " ⊨ ",
+    # the model sometimes writes "[page 9]"; plain spaces keep page links working
+    " ": " ", " ": " ",
+}
 
 
 def summarize_topic(topic_id: int) -> dict:

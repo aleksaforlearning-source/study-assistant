@@ -94,47 +94,63 @@ def clean_transcription(text: str) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: blocks[int(m.group(1))], text)
 
 
-def transcribe_page(page: pymupdf.Page) -> str | None:
-    """Waits out rate limits as long as needed and retries temporary errors a few
-    times; returns None if the page still cannot be read."""
+def page_image_url(page: pymupdf.Page) -> str:
     png = page.get_pixmap(dpi=RENDER_DPI).tobytes("png")
-    image_url = "data:image/png;base64," + base64.b64encode(png).decode()
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+def ask_vision(prompt: str, image_url: str, label: str = "vision") -> str | None:
+    """One prompt + one page image to the vision model."""
+    content = [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": image_url}},
+    ]
+    return ask_model(VISION_MODEL, content, label)
+
+
+def ask_model(model: str, content, label: str, max_tokens: int = 4096) -> str | None:
+    """One user message (text, or text + image) to a Groq model. Waits out rate
+    limits as long as needed and retries temporary errors a few times; returns
+    None if there is still no answer. Shared by formula pages and exam analysis."""
     transient = 0
 
     while True:
         try:
             response = client.chat.completions.create(
-                model=VISION_MODEL,
-                messages=[{"role": "user", "content": [
-                    {"type": "text", "text": PROMPT},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ]}],
+                model=model,
+                messages=[{"role": "user", "content": content}],
                 temperature=0,
-                max_completion_tokens=4096,
+                max_completion_tokens=max_tokens,
             )
         except RateLimitError as error:
             # The daily token limit refills slowly, so this can be 15 minutes or more.
             wait = float(error.response.headers.get("retry-after") or 60)
-            print(f"formulas: rate limit, waiting {wait:.0f}s")
+            print(f"{label}: rate limit, waiting {wait:.0f}s")
             time.sleep(wait)
             continue
         except (InternalServerError, APIConnectionError) as error:
             problem = error
         except APIError as error:
-            print(f"formulas: vision model failed: {error}")
+            print(f"{label}: vision model failed: {error}")
             return None
         else:
-            text = clean_transcription(response.choices[0].message.content or "")
+            text = re.sub(r"<think>.*?</think>", "", response.choices[0].message.content or "", flags=re.S).strip()
             if text:
                 return text
             problem = "empty answer"
 
         transient += 1
         if transient > MAX_TRANSIENT_RETRIES:
-            print(f"formulas: giving up after {MAX_TRANSIENT_RETRIES} retries: {problem}")
+            print(f"{label}: giving up after {MAX_TRANSIENT_RETRIES} retries: {problem}")
             return None
-        print(f"formulas: {problem}, retry {transient} in {30 * transient}s")
+        print(f"{label}: {problem}, retry {transient} in {30 * transient}s")
         time.sleep(30 * transient)
+
+
+def transcribe_page(page: pymupdf.Page) -> str | None:
+    text = ask_vision(PROMPT, page_image_url(page), label="formulas")
+    # "or None": a transcription that is empty after cleaning must not replace the text
+    return (clean_transcription(text) or None) if text else None
 
 
 def next_pending() -> tuple | None:
