@@ -399,6 +399,11 @@
   .rich blockquote { margin: .6em 0 .8em; padding: 6px 12px; border-left: 3px solid var(--violet);
                      border-radius: 0 6px 6px 0; background: var(--violet-soft); }
   .md-table-wrap { margin: .6em 0 .9em; overflow-x: auto; }
+  /* A formula on its own line does not wrap: a wide one scrolls sideways
+     inside the panel instead of running out of it. The padding keeps
+     exponents and big brackets from being cut by the scroll box. */
+  .rich .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+  .rich { overflow-wrap: break-word; }
   .md-table { border-collapse: collapse; font-size: .95em; }
   .md-table th, .md-table td { padding: 6px 10px; text-align: left; vertical-align: top; border: 1px solid var(--border); }
   .md-table th { font-weight: 600; background: var(--surface-2); }
