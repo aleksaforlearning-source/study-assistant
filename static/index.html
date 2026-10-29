@@ -2501,6 +2501,8 @@ async function dropTopic(event, parentId, blockId) {
 }
 
 async function makeRoot(topicId, blockId) {
+  const title = document.getElementById(`title-${topicId}`)?.textContent ?? "this topic";
+  if (!confirm(`Make “${title}” a top-level topic?`)) return;
   if (await patchTopic(topicId, { parent_id: null })) {
     await refresh(blockId);
   }
