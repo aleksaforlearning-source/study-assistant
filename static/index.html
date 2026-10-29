@@ -262,6 +262,9 @@
   .topic-parent { font-size: 12px; color: var(--faint); white-space: nowrap;
                   overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
   .topic-weight { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .topic .topic-weight { flex: none; text-align: right; }
+  /* room for all three buttons in every row, so the pages line up in one column */
+  .topic-actions { display: flex; justify-content: flex-end; flex: none; width: 84px; }
   .topic .icon-btn { opacity: 0; transition: opacity .12s; }
   .topic:hover .icon-btn, .topic:focus-within .icon-btn { opacity: 1; }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; cursor: pointer;
@@ -2183,12 +2186,14 @@ async function toggleBlock(blockId) {
          data-drop-label="${isChild ? "drop here into this group" : "drop here as a subtopic"}">
       <span class="dot dot-${t.status}" title="${t.status}" onclick="cycleStatus(${t.id}, '${t.status}', ${blockId})"></span>
       <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId}, this)">${escapeHtml(t.title)}</span>
-      ${awayFrom ? `<span class="topic-parent" title="subtopic of ${escapeHtml(awayFrom)}">↳ ${escapeHtml(awayFrom)}</span>` : ""}
+      ${awayFrom ? `<span class="topic-parent" title="subtopic of ${escapeHtml(awayFrom)}">under ${escapeHtml(awayFrom)}</span>` : ""}
       <span class="unclear-badge" id="unclear-${t.id}" title="unclear places" ${t.unclear ? "" : "hidden"}>?${t.unclear || 0}</span>
       <span class="topic-weight" title="pages of the lecture this topic is on">${pageRanges(t.pages)}</span>
-      ${isChild ? iconButton("outdent", "make it a top-level topic", `makeRoot(${t.id}, ${blockId})`) : ""}
-      ${iconButton("rename", "rename", `renameTopic(${t.id}, ${blockId})`)}
-      ${iconButton("delete", "delete", `deleteTopic(${t.id}, ${blockId})`, "danger")}
+      <span class="topic-actions">
+        ${isChild ? iconButton("outdent", "make it a top-level topic", `makeRoot(${t.id}, ${blockId})`) : ""}
+        ${iconButton("rename", "rename", `renameTopic(${t.id}, ${blockId})`)}
+        ${iconButton("delete", "delete", `deleteTopic(${t.id}, ${blockId})`, "danger")}
+      </span>
     </div>`;
 
   // Hidden behind "+ upload" once the block has files; open in an empty block
