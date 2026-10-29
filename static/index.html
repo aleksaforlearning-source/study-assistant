@@ -856,7 +856,7 @@ async function renderPanel(topicId, blockId) {
     </div>
     <div class="reveal" id="note-${topicId}" hidden>
       <textarea id="draft-${topicId}" rows="3" placeholder="in your own words... (ctrl+enter to save, esc to cancel)"
-                onkeydown="if (event.key === 'Enter' && event.ctrlKey) saveNote(${topicId}, ${blockId}); else if (event.key === 'Escape') cancelNote(${topicId})"></textarea>
+                onkeydown="if (event.key === 'Enter' && event.ctrlKey) saveNote(${topicId}, ${blockId})"></textarea>
       <div class="edit-actions">
         <button class="primary" onclick="saveNote(${topicId}, ${blockId})">save</button>
         <button class="ghost" onclick="cancelNote(${topicId})">cancel</button>
@@ -1166,8 +1166,14 @@ function setMarkMode(mode) {
   if (note) document.getElementById("mark-comment").focus();
 }
 
+// Esc in an edit field does what its cancel button does; every edit field
+// shares its parent with its row of buttons.
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape") hideMarkPopover();
+  if (event.key !== "Escape") return;
+  const cancel = event.target.matches?.("textarea, input")
+    && event.target.parentElement.querySelector(":scope > .edit-actions button.ghost");
+  if (cancel) cancel.click();
+  else hideMarkPopover();
 });
 
 async function saveMark() {
@@ -1398,7 +1404,7 @@ function editAnswer(topicId, blockId, index, button) {
   const turn = threads[topicId][index];
   document.getElementById(`answer-text-${topicId}-${index}`).outerHTML =
     `<textarea class="summary-edit" id="answer-edit-${topicId}-${index}" rows="10"
-               onkeydown="if (event.key === 'Escape') showThread(${topicId}, ${blockId})">${escapeHtml(turn.answer)}</textarea>`;
+               onkeydown="if (event.key === 'Escape') { event.stopPropagation(); showThread(${topicId}, ${blockId}); }">${escapeHtml(turn.answer)}</textarea>`;
   button.outerHTML = `<button class="exam-small" onclick="showThread(${topicId}, ${blockId})">cancel</button>`;
   document.getElementById(`answer-edit-${topicId}-${index}`).focus();
 }
@@ -2655,7 +2661,11 @@ function editSummary(topicId, blockId) {
 
   box.outerHTML = `
     <textarea class="summary-edit" id="edit-${topicId}" rows="10">${escapeHtml(current)}</textarea>
-    <button class="primary" onclick="saveSummary(${topicId}, ${blockId})">save summary</button>`;
+    <div class="edit-actions">
+      <button class="primary" onclick="saveSummary(${topicId}, ${blockId})">save summary</button>
+      <button class="ghost" onclick="reopenPanel(${topicId}, ${blockId})">cancel</button>
+    </div>`;
+  document.getElementById(`edit-${topicId}`).focus();
 }
 
 async function saveSummary(topicId, blockId) {
