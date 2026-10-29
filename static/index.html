@@ -868,6 +868,7 @@ async function renderPanel(topicId, blockId) {
         <input id="q-${topicId}" placeholder="${threads[topicId]?.length ? "ask a follow-up..." : "ask about this topic..."}"
                onkeydown="if (event.key === 'Enter') askTopic(${topicId}, ${topic.subject_id}, ${blockId})">
         <button class="primary" onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">ask</button>
+        <button class="ghost" onclick="cancelAsk(${topicId})">cancel</button>
       </div>
       <button class="ghost exam-small" id="new-thread-${topicId}" ${threads[topicId]?.length ? "" : "hidden"}
               onclick="newThread(${topicId}, ${blockId})">new thread</button>
@@ -1171,7 +1172,7 @@ function setMarkMode(mode) {
 document.addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
   const cancel = event.target.matches?.("textarea, input")
-    && event.target.parentElement.querySelector(":scope > .edit-actions button.ghost");
+    && event.target.parentElement.querySelector(":scope > .edit-actions button.ghost, :scope > button.ghost");
   if (cancel) cancel.click();
   else hideMarkPopover();
 });
@@ -1285,6 +1286,12 @@ async function saveNote(topicId, blockId) {
 
   draft.value = "";
   await reopenPanel(topicId, blockId);
+}
+
+// Hides the ask box; the thread stays and shows again on "ask".
+function cancelAsk(topicId) {
+  document.getElementById(`q-${topicId}`).value = "";
+  document.getElementById(`ask-${topicId}`).hidden = true;
 }
 
 function cancelNote(topicId) {
