@@ -1128,7 +1128,8 @@ def list_block_topics(block_id: int):
                 "min(c.page_number) AS first_page, "
                 "t.summary IS NOT NULL AS has_summary, "
                 "(SELECT count(*) FROM struggles st WHERE st.topic_id = t.id "
-                " AND st.event_type = 'unclear' AND st.resolved_at IS NULL) AS unclear "
+                " AND st.event_type = 'unclear' AND st.resolved_at IS NULL) AS unclear, "
+                "array_agg(DISTINCT c.page_number ORDER BY c.page_number) AS pages "
                 "FROM topics t "
                 "JOIN topic_chunks tc ON tc.topic_id = t.id "
                 "JOIN chunks c ON c.id = tc.chunk_id "
@@ -1147,6 +1148,7 @@ def list_block_topics(block_id: int):
                     "first_page": r[5],
                     "has_summary": r[6],
                     "unclear": r[7],
+                    "pages": r[8],
                 }
                 for r in cur.fetchall()
             ]

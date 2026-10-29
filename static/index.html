@@ -580,7 +580,20 @@ const ICONS = {
   note: `<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>`,
   ask: `<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>`,
   outdent: `<path d="M21 5H11"/><path d="M21 12H11"/><path d="M21 19H11"/><path d="m7 8-4 4 4 4"/>`,
+  close: `<path d="M18 6 6 18"/><path d="m6 6 12 12"/>`,
 };
+
+// [3, 4, 5, 9] → "p. 3–5, 9"
+function pageRanges(pages) {
+  if (!pages?.length) return "";
+  const ranges = [];
+  pages.forEach(p => {
+    const last = ranges[ranges.length - 1];
+    if (last && p === last[1] + 1) last[1] = p;
+    else ranges.push([p, p]);
+  });
+  return "p. " + ranges.map(([a, b]) => a === b ? a : `${a}–${b}`).join(", ");
+}
 
 const icon = name => `<svg class="ico" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
 
@@ -859,7 +872,7 @@ async function renderPanel(topicId, blockId) {
                 onkeydown="if (event.key === 'Enter' && event.ctrlKey) saveNote(${topicId}, ${blockId})"></textarea>
       <div class="edit-actions">
         <button class="primary" onclick="saveNote(${topicId}, ${blockId})">save</button>
-        <button class="ghost" onclick="cancelNote(${topicId})">cancel</button>
+        ${iconButton("close", "cancel (esc)", `cancelNote(${topicId})`, "cancel")}
       </div>
     </div>
     <div class="reveal" id="ask-${topicId}" ${threads[topicId]?.length || pendingQuestions[topicId] ? "" : "hidden"}>
@@ -868,7 +881,7 @@ async function renderPanel(topicId, blockId) {
         <input id="q-${topicId}" placeholder="${threads[topicId]?.length ? "ask a follow-up..." : "ask about this topic..."}"
                onkeydown="if (event.key === 'Enter') askTopic(${topicId}, ${topic.subject_id}, ${blockId})">
         <button class="primary" onclick="askTopic(${topicId}, ${topic.subject_id}, ${blockId})">ask</button>
-        <button class="ghost" onclick="cancelAsk(${topicId})">cancel</button>
+        ${iconButton("close", "cancel (esc)", `cancelAsk(${topicId})`, "cancel")}
       </div>
       <button class="ghost exam-small" id="new-thread-${topicId}" ${threads[topicId]?.length ? "" : "hidden"}
               onclick="newThread(${topicId}, ${blockId})">new thread</button>
@@ -1172,7 +1185,8 @@ function setMarkMode(mode) {
 document.addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
   const cancel = event.target.matches?.("textarea, input")
-    && event.target.parentElement.querySelector(":scope > .edit-actions button.ghost, :scope > button.ghost");
+    && event.target.parentElement.querySelector(
+      ":scope > .edit-actions :is(button.ghost, .cancel), :scope > :is(button.ghost, .cancel)");
   if (cancel) cancel.click();
   else hideMarkPopover();
 });
@@ -2171,7 +2185,7 @@ async function toggleBlock(blockId) {
       <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId}, this)">${escapeHtml(t.title)}</span>
       ${awayFrom ? `<span class="topic-parent" title="subtopic of ${escapeHtml(awayFrom)}">↳ ${escapeHtml(awayFrom)}</span>` : ""}
       <span class="unclear-badge" id="unclear-${t.id}" title="unclear places" ${t.unclear ? "" : "hidden"}>?${t.unclear || 0}</span>
-      <span class="topic-weight">${t.weight}</span>
+      <span class="topic-weight" title="pages of the lecture this topic is on">${pageRanges(t.pages)}</span>
       ${isChild ? iconButton("outdent", "make it a top-level topic", `makeRoot(${t.id}, ${blockId})`) : ""}
       ${iconButton("rename", "rename", `renameTopic(${t.id}, ${blockId})`)}
       ${iconButton("delete", "delete", `deleteTopic(${t.id}, ${blockId})`, "danger")}
@@ -2467,7 +2481,14 @@ async function dropTopic(event, parentId, blockId) {
   event.preventDefault();
   const topicId = Number(event.dataTransfer.getData(TOPIC_DRAG_TYPE));
   endTopicDrag();
-  if (!topicId) return;
+  if (!topicId || topicId === parentId) return;
+
+  // A drop is easy to make by accident, so it is confirmed first.
+  const title = id => document.getElementById(`title-${id}`)?.textContent ?? "this topic";
+  const question = parentId == null
+    ? `Make “${title(topicId)}” a top-level topic?`
+    : `Move “${title(topicId)}” under “${title(parentId)}”?`;
+  if (!confirm(question)) return;
 
   if (await patchTopic(topicId, { parent_id: parentId })) {
     await refresh(blockId);
