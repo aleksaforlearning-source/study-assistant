@@ -690,10 +690,12 @@ def update_topic(topic_id: int, patch: TopicPatch):
                     (patch.status, topic_id),
                 )
             if "summary" in fields:
+                summary = (patch.summary or "").strip()
+                # An emptied summary means none: back to 'ai', so generating can fill it again.
                 cur.execute(
-                    "UPDATE topics SET summary = %s, summary_origin = 'manual' WHERE id = %s",
-                    (patch.summary, topic_id),
-                )            
+                    "UPDATE topics SET summary = %s, summary_origin = %s WHERE id = %s",
+                    (summary or None, "manual" if summary else "ai", topic_id),
+                )
             if "parent_id" in fields:
                 if patch.parent_id is not None:
                     if patch.parent_id == topic_id:

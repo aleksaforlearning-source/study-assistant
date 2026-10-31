@@ -104,3 +104,7 @@ ALTER TABLE struggles ADD COLUMN IF NOT EXISTS comment TEXT;
 -- revisit = "come back to this", a light weak-spot signal for Focus.
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS anchor TEXT;
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS revisit BOOLEAN NOT NULL DEFAULT false;
+
+-- A summary saved empty counted as present in the block but showed "generate" in
+-- the topic; empty now means none, and 'ai' lets generating fill it.
+UPDATE topics SET summary = NULL, summary_origin = 'ai' WHERE btrim(summary) = '';

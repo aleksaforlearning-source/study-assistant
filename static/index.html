@@ -47,7 +47,10 @@
 
   /* layout */
   .layout { display: flex; height: 100vh; }
-  .main { flex: 1; overflow-y: auto; padding: 48px 32px 96px; }
+  /* position: relative keeps absolutely placed things inside the scroll box (KaTeX
+     hides a copy of every formula that way); without it they stretched the whole
+     page and a second scrollbar appeared. */
+  .main { position: relative; flex: 1; overflow-y: auto; padding: 48px 32px 96px; }
   .main-inner { max-width: 760px; margin: 0 auto; }
   .divider { display: none; width: 6px; cursor: col-resize; background: var(--bg);
              border-left: 1px solid var(--border); transition: background .15s; }
@@ -2076,8 +2079,6 @@ async function loadBlocks(subjectId) {
     return;
   }
 
-  const maxWeight = Math.max(...blocks.map(b => b.weight), 1);
-
   target.innerHTML = blocks.map(b => {
     const total = b.topics || 1;
     const pct = n => (n / total) * 100;
@@ -2088,7 +2089,7 @@ async function loadBlocks(subjectId) {
             <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${escapeHtml(b.name)}</span>
             <span class="block-meta">${b.topics} topics<span class="formula-progress" id="formulas-${b.block_id}">${formulaLabel(b)}</span></span>
         </div>
-        <div class="bar-track" style="width: ${(b.weight / maxWeight) * 100}%">
+        <div class="bar-track">
           <div class="bar">
             <div class="seg-new"    style="width: ${pct(b.status.new)}%"></div>
             <div class="seg-known"  style="width: ${pct(b.status.known)}%"></div>
