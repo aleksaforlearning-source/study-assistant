@@ -5,6 +5,7 @@ from groq import Groq, RateLimitError
 
 import hashlib
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 from datetime import date
 from enum import Enum
 
@@ -1477,11 +1478,35 @@ def get_source_pdf(source_id: int):
     if row[1] is None:
         raise HTTPException(status_code=404, detail="no PDF stored for this file")
 
+    # filename*= carries any characters; a plain filename="..." header only
+    # takes Latin-1, and a name like "Prüfung" or "Экзамен" would crash it.
     return Response(
         content=bytes(row[1]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{row[0]}"'},
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(row[0])}"},
     )
+
+
+class SourcePatch(BaseModel):
+    filename: str
+
+
+@app.patch("/sources/{source_id}")
+def rename_source(source_id: int, patch: SourcePatch):
+    """Only the name shown in the app changes; the stored PDF stays as it is."""
+    name = patch.filename.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name cannot be empty")
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE sources SET filename = %s WHERE id = %s RETURNING id", (name, source_id))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+
+    return {"source_id": source_id, "filename": name}
 
 
 @app.get("/blocks/{block_id}/files")

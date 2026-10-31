@@ -1892,6 +1892,25 @@ const fileTitle = filename => filename.replace(/\.pdf$/i, "");
 // "Chapter 8: Multivariate calculus" → "Chapter 8"
 const shortBlockName = name => (name || "").split(":")[0];
 
+// Only the name shown in the app; ".pdf" is added back by the server.
+async function renameSource(sourceId) {
+  const current = fileTitle(sourceNames[sourceId] || "");
+  const name = prompt("new name", current);
+  if (!name || !name.trim() || name.trim() === current) return;
+
+  const response = await fetch(`/sources/${sourceId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: name.trim() }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    alert(`failed: ${error.detail ?? response.status}`);
+    return;
+  }
+  await refresh(null);
+}
+
 async function loadExams(subjectId) {
   const [exams, focus] = await Promise.all([
     fetch(`/subjects/${subjectId}/exams`).then(r => r.json()),
@@ -1954,6 +1973,7 @@ function renderExamFile(e, icon) {
       <span class="exam-icon">${icon}</span>
       <button class="exam-name" title="${escapeHtml(e.filename)}" onclick="openPdf(${e.source_id}, 1)">${escapeHtml(fileTitle(e.filename))}</button>
       <span class="exam-state" id="exam-state-${e.source_id}">${examStateHtml(e)}</span>
+      ${iconButton("rename", "rename exam", `renameSource(${e.source_id})`)}
       ${iconButton("delete", "delete exam", `deleteSource(${e.source_id}, null)`, "danger")}
     </div>
     <div class="exam-questions" id="exam-q-${e.source_id}" ${openExams.has(e.source_id) ? "" : "hidden"}>
