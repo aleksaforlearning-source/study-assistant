@@ -184,10 +184,16 @@ def create_subject(subject: SubjectIn):
 def list_subjects():
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, exam_date FROM subjects ORDER BY id")
+            # topic counts are for the progress on the subjects page
+            cur.execute(
+                "SELECT s.id, s.name, s.exam_date, "
+                "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id), "
+                "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id AND t.status = 'known') "
+                "FROM subjects s ORDER BY s.id"
+            )
             rows = cur.fetchall()
     return [
-        {"id": row[0], "name": row[1], "exam_date": row[2]}
+        {"id": row[0], "name": row[1], "exam_date": row[2], "topics": row[3], "known": row[4]}
         for row in rows
     ]
 

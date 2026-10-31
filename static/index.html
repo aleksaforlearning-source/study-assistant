@@ -104,6 +104,26 @@
   h1 { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
        margin: 0 0 12px; background: var(--gradient); -webkit-background-clip: text;
        background-clip: text; color: transparent; }
+  h1 a { color: inherit; text-decoration: none; }
+  .back-link { margin-right: 6px; font-size: 13px; color: var(--muted); text-decoration: none; }
+  .back-link:hover { color: var(--text); }
+
+  /* subjects page: one card per subject, the nearest exam first */
+  .home-head { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 16px; }
+  .home-title { margin: 0; font-size: 26px; font-weight: 600; }
+  .subject-card { display: flex; align-items: center; gap: 16px; width: 100%; margin-bottom: 10px;
+                  padding: 16px 18px; text-align: left; border: 1px solid var(--border);
+                  border-radius: 12px; background: var(--surface); cursor: pointer; }
+  .subject-card:hover { border-color: var(--border-strong); background: var(--surface-2); }
+  .card-main { flex: 1; min-width: 0; }
+  .card-name, .card-sub, .card-bar, .card-bar span { display: block; }
+  .card-name { font-size: 17px; font-weight: 600; color: var(--text); }
+  .card-sub { margin-top: 2px; font-size: 13px; color: var(--faint); }
+  .card-days { flex: none; text-align: right; font-size: 13px; }
+  .card-days b { display: block; font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .card-bar { height: 4px; margin-top: 10px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+  .card-bar span { height: 4px; background: var(--green); }
+
   .toolbar { display: flex; gap: 4px; align-items: center; margin-bottom: 2px; flex-wrap: wrap; }
   .toolbar .spacer { flex: 1; }
 
@@ -491,9 +511,20 @@
 
   <div class="main">
     <div class="main-inner">
-      <h1>study assistant</h1>
+      <h1><a href="#" title="all subjects">study assistant</a></h1>
 
+      <!-- The first page: every subject with its exam date -->
+      <div id="home" hidden>
+        <div class="home-head">
+          <h2 class="home-title">Subjects</h2>
+          <button class="ghost" onclick="addSubject()">+ subject</button>
+        </div>
+        <div id="subject-cards"></div>
+      </div>
+
+      <div id="subject-page" hidden>
       <div class="toolbar">
+        <a class="back-link" href="#" title="all subjects">← subjects</a>
         <select id="subject" aria-label="subject"></select>
         <span class="menu-wrap">
           <button class="icon-btn menu-btn" title="subject options" aria-label="subject options"
@@ -504,7 +535,6 @@
           </div>
         </span>
         <span class="spacer"></span>
-        <button class="ghost" onclick="addSubject()">+ subject</button>
         <button class="ghost" onclick="addBlock()">+ block</button>
       </div>
       <div class="exam" id="exam"></div>
@@ -519,6 +549,7 @@
       <div id="blocks"></div>
       <div id="focus" hidden></div>
       <div id="exams" hidden></div>
+      </div>
     </div>
   </div>
 
@@ -1585,25 +1616,70 @@ async function loadSubjects() {
     .map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`)
     .join("");
 
-  select.onchange = () => {
-    rememberSubject(select.value);
-    renderExam();
-    loadView(select.value);
-  };
+  select.onchange = () => openSubject(select.value);
+  route();
+}
 
-  // Reopen the subject from last time, if it still exists.
-  const saved = savedSubject();
-  const start = subjects.find(s => String(s.id) === saved) || subjects[0];
-  if (start) {
-    select.value = start.id;
-    renderExam();
-    // restoreScroll only acts on the first load: blocks and panels are open by then.
-    loadView(start.id).then(restoreScroll);
-  } else {
-    renderExam();
-    // the containers have the same ids as the view names
-    document.getElementById(currentView).innerHTML = `<p class="empty">no subjects yet — create one with + subject</p>`;
-  }
+// ---- Pages: the subjects list (#) and one subject (#subject-5) ----
+// The address says which page is open, so a reload stays on it and the
+// browser's back button goes from a subject to the list.
+
+function openSubject(subjectId) {
+  location.hash = `subject-${subjectId}`;   // hashchange calls route()
+}
+
+window.addEventListener("hashchange", route);
+
+function route() {
+  const id = location.hash.match(/^#subject-(\d+)$/)?.[1];
+  const subject = subjectList.find(s => String(s.id) === id);
+  document.getElementById("home").hidden = Boolean(subject);
+  document.getElementById("subject-page").hidden = !subject;
+  if (subject) showSubject(subject.id);
+  else showHome();
+}
+
+function showSubject(subjectId) {
+  document.getElementById("subject").value = subjectId;
+  renderExam();
+  // restoreScroll only acts on the first load: blocks and panels are open by then.
+  loadView(subjectId).then(restoreScroll);
+}
+
+// Upcoming exams first, the nearest on top; then subjects without a date; past exams last.
+async function showHome() {
+  // A scroll position kept from a subject means nothing here.
+  scrollRestored = true;
+  document.querySelector(".main").scrollTop = 0;
+  // Fresh counts: topics marked known inside a subject change the progress.
+  subjectList = await fetch("/subjects").then(r => r.json());
+
+  const order = s => {
+    const info = examInfo(s);
+    return info.days === null ? [1, 0] : info.days >= 0 ? [0, info.days] : [2, -info.days];
+  };
+  const sorted = [...subjectList].sort((a, b) => {
+    const [ga, da] = order(a), [gb, db] = order(b);
+    return ga - gb || da - db;
+  });
+
+  document.getElementById("subject-cards").innerHTML = sorted.map(s => {
+    const info = examInfo(s);
+    const days = info.days === null ? `<span class="exam-none">no exam date</span>`
+      : info.days > 0 ? `<span class="exam-${info.level}"><b>${info.days}</b>${info.days === 1 ? "day" : "days"}</span>`
+      : info.days === 0 ? `<span class="exam-today"><b>today</b></span>`
+      : `<span class="exam-past">done</span>`;
+    const percent = s.topics ? Math.round((s.known / s.topics) * 100) : 0;
+    return `
+      <button class="subject-card" onclick="openSubject(${s.id})">
+        <span class="card-main">
+          <span class="card-name">${escapeHtml(s.name)}</span>
+          <span class="card-sub">${info.label ? `exam ${info.label} · ` : ""}${s.known}/${s.topics} topics known</span>
+          <span class="card-bar"><span style="width: ${percent}%"></span></span>
+        </span>
+        <span class="card-days">${days}</span>
+      </button>`;
+  }).join("") || `<p class="empty">no subjects yet — create one with + subject</p>`;
 }
 
 function toggleSubjectMenu(event) {
@@ -1671,7 +1747,8 @@ async function deleteSubject() {
   }
 
   document.getElementById("delete-subject").close();
-  // The remembered subject no longer exists, so this opens the first one left.
+  // The deleted subject's page is gone: back to the list, without a history entry to it.
+  history.replaceState(null, "", location.pathname);
   await loadSubjects();
 }
 
@@ -1694,6 +1771,17 @@ function daysUntil(day) {
   return Math.round((day - today) / 86400000);
 }
 
+// Days to the exam, its date as text and how urgent it is (the colour class);
+// days is null when the subject has no exam date.
+function examInfo(subject) {
+  if (!subject.exam_date) return { days: null, label: "", level: "none" };
+  const day = parseDay(subject.exam_date);
+  const days = daysUntil(day);
+  const label = day.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const level = days < 0 ? "past" : days === 0 ? "today" : days <= 7 ? "soon" : days <= 30 ? "month" : "far";
+  return { days, label, level };
+}
+
 function renderExam() {
   const box = document.getElementById("exam");
   const subject = currentSubject();
@@ -1706,21 +1794,10 @@ function renderExam() {
     return;
   }
 
-  const day = parseDay(subject.exam_date);
-  const days = daysUntil(day);
-  const label = day.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-
-  let text, level;
-  if (days > 0) {
-    text = `Exam · ${label} · in ${days} ${days === 1 ? "day" : "days"}`;
-    level = days <= 7 ? "soon" : days <= 30 ? "month" : "far";
-  } else if (days === 0) {
-    text = "Exam today";
-    level = "today";
-  } else {
-    text = `Exam was on ${label}`;
-    level = "past";
-  }
+  const { days, label, level } = examInfo(subject);
+  const text = days > 0 ? `Exam · ${label} · in ${days} ${days === 1 ? "day" : "days"}`
+    : days === 0 ? "Exam today"
+    : `Exam was on ${label}`;
 
   box.innerHTML = `<button class="exam-line exam-${level}" title="change exam date" onclick="editExam()">◷ ${text}</button>`;
 }
@@ -1760,16 +1837,6 @@ async function saveExam(value) {
   renderExam();
 }
 
-const SUBJECT_KEY = "study-assistant:subject";
-
-// localStorage can be unavailable (private window, blocked site data); the page works without it.
-function savedSubject() {
-  try { return localStorage.getItem(SUBJECT_KEY); } catch { return null; }
-}
-
-function rememberSubject(subjectId) {
-  try { localStorage.setItem(SUBJECT_KEY, String(subjectId)); } catch {}
-}
 
 // ---- Views: Blocks (by week) and Focus (what to study next) ----
 // Only the active view is drawn. Both use the same topic panels with ids like
@@ -2659,11 +2726,10 @@ async function addSubject() {
     return;
   }
 
+  // pushState does not fire hashchange; loadSubjects routes once the list has the new subject.
   const subject = await response.json();
-  rememberSubject(subject.id);
+  history.pushState(null, "", `#subject-${subject.id}`);
   await loadSubjects();
-  document.getElementById("subject").value = subject.id;
-  await loadView(subject.id);
 }
 
 async function addBlock() {
