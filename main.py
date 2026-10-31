@@ -1201,6 +1201,34 @@ def preview_source_deletion(source_id: int):
     return {"source_id": source_id, "filename": row[0], "topics": len(topic_ids), "notes": notes}
 
 
+def remove_source(cur, source_id: int) -> int:
+    """Deletes a file with its chunks and the topics only it had; returns how many topics went."""
+    # Collected before the links go, while it is still known where topics came from.
+    topic_ids = topics_only_from(cur, source_id)
+
+    cur.execute(
+        "DELETE FROM topic_chunks WHERE chunk_id IN "
+        "(SELECT id FROM chunks WHERE source_id = %s)",
+        (source_id,),
+    )
+    if topic_ids:
+        cur.execute("UPDATE topics SET parent_id = NULL WHERE parent_id = ANY(%s)", (topic_ids,))
+        for table in TOPIC_CHILD_TABLES:
+            cur.execute(f"DELETE FROM {table} WHERE topic_id = ANY(%s)", (topic_ids,))
+        cur.execute("DELETE FROM topics WHERE id = ANY(%s)", (topic_ids,))
+
+    # An exam file: its questions' topic links go before the questions.
+    cur.execute(
+        "DELETE FROM exam_question_topics WHERE question_id IN "
+        "(SELECT id FROM exam_questions WHERE source_id = %s)",
+        (source_id,),
+    )
+    for table in ("techniques", "exam_questions", "chunks", "jobs"):
+        cur.execute(f"DELETE FROM {table} WHERE source_id = %s", (source_id,))
+    cur.execute("DELETE FROM sources WHERE id = %s", (source_id,))
+    return len(topic_ids)
+
+
 @app.delete("/sources/{source_id}")
 def delete_source(source_id: int):
     with get_connection() as conn:
@@ -1219,31 +1247,86 @@ def delete_source(source_id: int):
                     detail="this file is still being processed, delete it when that finishes",
                 )
 
-            # Collected before the links go, while it is still known where topics came from.
-            topic_ids = topics_only_from(cur, source_id)
+            topics_removed = remove_source(cur, source_id)
+
+    return {"deleted": source_id, "filename": row[0], "topics_removed": topics_removed}
+
+
+@app.patch("/blocks/{block_id}")
+def rename_block(block_id: int, body: BlockIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name cannot be empty")
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE blocks SET name = %s WHERE id = %s RETURNING id", (name, block_id))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"block {block_id} not found")
+
+    return {"block_id": block_id, "name": name}
+
+
+# Topics only this block's files have: they go with the block.
+BLOCK_ONLY_TOPICS = (
+    "SELECT DISTINCT tc.topic_id FROM topic_chunks tc "
+    "JOIN chunks c ON c.id = tc.chunk_id JOIN sources s ON s.id = c.source_id "
+    "WHERE s.block_id = %s AND NOT EXISTS ("
+    "  SELECT 1 FROM topic_chunks tc2 JOIN chunks c2 ON c2.id = tc2.chunk_id "
+    "  JOIN sources s2 ON s2.id = c2.source_id "
+    "  WHERE tc2.topic_id = tc.topic_id AND s2.block_id IS DISTINCT FROM %s)"
+)
+
+
+@app.get("/blocks/{block_id}/delete-preview")
+def preview_block_deletion(block_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM blocks WHERE id = %s", (block_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"block {block_id} not found")
+
+            cur.execute("SELECT count(*) FROM sources WHERE block_id = %s", (block_id,))
+            files = cur.fetchone()[0]
+            cur.execute(f"SELECT count(*) FROM ({BLOCK_ONLY_TOPICS}) t", (block_id, block_id))
+            topics = cur.fetchone()[0]
+            cur.execute(
+                f"SELECT count(*) FROM notes WHERE topic_id IN ({BLOCK_ONLY_TOPICS})",
+                (block_id, block_id),
+            )
+            notes = cur.fetchone()[0]
+
+    return {"block_id": block_id, "name": row[0], "files": files, "topics": topics, "notes": notes}
+
+
+@app.delete("/blocks/{block_id}")
+def delete_block(block_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM blocks WHERE id = %s", (block_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"block {block_id} not found")
 
             cur.execute(
-                "DELETE FROM topic_chunks WHERE chunk_id IN "
-                "(SELECT id FROM chunks WHERE source_id = %s)",
-                (source_id,),
+                "SELECT 1 FROM jobs j JOIN sources s ON s.id = j.source_id "
+                "WHERE s.block_id = %s AND j.status = 'running'",
+                (block_id,),
             )
-            if topic_ids:
-                cur.execute("UPDATE topics SET parent_id = NULL WHERE parent_id = ANY(%s)", (topic_ids,))
-                for table in TOPIC_CHILD_TABLES:
-                    cur.execute(f"DELETE FROM {table} WHERE topic_id = ANY(%s)", (topic_ids,))
-                cur.execute("DELETE FROM topics WHERE id = ANY(%s)", (topic_ids,))
+            if cur.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail="a file of this block is still being processed, delete it when that finishes",
+                )
 
-            # An exam file: its questions' topic links go before the questions.
-            cur.execute(
-                "DELETE FROM exam_question_topics WHERE question_id IN "
-                "(SELECT id FROM exam_questions WHERE source_id = %s)",
-                (source_id,),
-            )
-            for table in ("techniques", "exam_questions", "chunks", "jobs"):
-                cur.execute(f"DELETE FROM {table} WHERE source_id = %s", (source_id,))
-            cur.execute("DELETE FROM sources WHERE id = %s", (source_id,))
+            # File by file, the same way a single file is deleted.
+            cur.execute("SELECT id FROM sources WHERE block_id = %s", (block_id,))
+            source_ids = [r[0] for r in cur.fetchall()]
+            topics_removed = sum(remove_source(cur, source_id) for source_id in source_ids)
+            cur.execute("DELETE FROM blocks WHERE id = %s", (block_id,))
 
-    return {"deleted": source_id, "filename": row[0], "topics_removed": len(topic_ids)}
+    return {"deleted": block_id, "name": row[0], "topics_removed": topics_removed}
 
 
 app.mount("/app", StaticFiles(directory="static", html=True), name="static")

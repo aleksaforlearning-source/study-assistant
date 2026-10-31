@@ -144,7 +144,9 @@
   /* Focus: per block, topics by priority with the reasons next to them */
   .focus-block { margin-bottom: 30px; }
   .focus-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
-                margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--surface-2); }
+                margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--surface-2);
+                cursor: pointer; user-select: none; }
+  .focus-head:hover .block-name { color: #fff; }
   .focus-row { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 3px 6px;
                margin: 0 -6px; border-radius: 6px; }
   .focus-row:hover { background: var(--surface); }
@@ -245,7 +247,10 @@
                 padding: 8px 10px 6px; margin: 0 -10px; border-radius: 6px; cursor: pointer;
                 user-select: none; }
   .block-head:hover { background: var(--surface); }
-  .block-name { font-weight: 600; }
+  .block-name { font-weight: 600; margin-right: auto; }
+  .block-actions { display: flex; align-self: center; }
+  .block-head .icon-btn { opacity: 0; transition: opacity .12s; }
+  .block-head:hover .icon-btn, .block-head:focus-within .icon-btn { opacity: 1; }
   .block-meta { font-size: 13px; color: var(--faint); white-space: nowrap; }
   .formula-progress { color: var(--violet); }
   .arrow { display: inline-block; width: 18px; color: var(--faint); font-size: 11px; }
@@ -468,7 +473,7 @@
   .page-link:hover { background: rgba(70, 120, 225, 0.3); }
 
   @media (hover: none) {
-    .topic .icon-btn, .summary-wrap .icon-btn, .note .icon-btn { opacity: 1; }
+    .topic .icon-btn, .summary-wrap .icon-btn, .note .icon-btn, .block-head .icon-btn { opacity: 1; }
     .chip-delete { width: 22px; padding: 0 8px 0 2px; }
   }
   @media (max-width: 640px) {
@@ -1778,6 +1783,10 @@ function focusReasons(t) {
   ].join("");
 }
 
+// Blocks folded in Focus; they all start unfolded and a fold is remembered.
+const FOLDED_FOCUS_KEY = "study-assistant:folded-focus";
+const foldedFocus = new Set(loadState(FOLDED_FOCUS_KEY, []));
+
 async function loadFocus(subjectId) {
   const blocks = await fetch(`/subjects/${subjectId}/focus`).then(r => r.json());
   const target = document.getElementById("focus");
@@ -1796,18 +1805,32 @@ async function loadFocus(subjectId) {
       <span class="focus-why" title="priority ${t.priority}">${focusReasons(t)}</span>
     </div>`;
 
-  target.innerHTML = blocks.map(b => `
+  target.innerHTML = blocks.map(b => {
+    const folded = foldedFocus.has(b.block_id);
+    return `
     <section class="focus-block">
-      <div class="focus-head">
-        <span class="block-name">${escapeHtml(b.name)}</span>
+      <div class="focus-head" onclick="toggleFocusBlock(${b.block_id})">
+        <span class="block-name"><span class="arrow" id="focus-arrow-${b.block_id}">${folded ? "▸" : "▾"}</span>${escapeHtml(b.name)}</span>
         <span class="block-meta">${count(b.study.length + b.known.length, "topic")} · ${b.known.length} known</span>
       </div>
-      ${b.study.map((t, i) => row(t, b.block_id, i + 1)).join("")
-        || `<p class="empty focus-done">everything here is known ✓</p>`}
-      ${b.known.length ? `
-        <button class="ghost focus-known-toggle" onclick="toggleKnown(this)">known (${b.known.length}) ▸</button>
-        <div class="focus-known" hidden>${b.known.map(t => row(t, b.block_id, null)).join("")}</div>` : ""}
-    </section>`).join("");
+      <div id="focus-body-${b.block_id}" ${folded ? "hidden" : ""}>
+        ${b.study.map((t, i) => row(t, b.block_id, i + 1)).join("")
+          || `<p class="empty focus-done">everything here is known ✓</p>`}
+        ${b.known.length ? `
+          <button class="ghost focus-known-toggle" onclick="toggleKnown(this)">known (${b.known.length}) ▸</button>
+          <div class="focus-known" hidden>${b.known.map(t => row(t, b.block_id, null)).join("")}</div>` : ""}
+      </div>
+    </section>`;
+  }).join("");
+}
+
+function toggleFocusBlock(blockId) {
+  const body = document.getElementById(`focus-body-${blockId}`);
+  body.hidden = !body.hidden;
+  document.getElementById(`focus-arrow-${blockId}`).textContent = body.hidden ? "▸" : "▾";
+  if (body.hidden) foldedFocus.add(blockId);
+  else foldedFocus.delete(blockId);
+  saveState(FOLDED_FOCUS_KEY, [...foldedFocus]);
 }
 
 function toggleKnown(button) {
@@ -2088,6 +2111,10 @@ async function loadBlocks(subjectId) {
         <div class="block-head" onclick="toggleBlock(${b.block_id})">
             <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${escapeHtml(b.name)}</span>
             <span class="block-meta">${b.topics} topics<span class="formula-progress" id="formulas-${b.block_id}">${formulaLabel(b)}</span></span>
+            <span class="block-actions">
+              ${iconButton("rename", "rename block", `event.stopPropagation(); renameBlock(${b.block_id})`)}
+              ${iconButton("delete", "delete block", `event.stopPropagation(); deleteBlock(${b.block_id})`, "danger")}
+            </span>
         </div>
         <div class="bar-track">
           <div class="bar">
@@ -2602,6 +2629,43 @@ async function addBlock() {
 
   // A new block is only visible in Blocks, so switch there.
   setView("blocks");
+}
+
+async function renameBlock(blockId) {
+  const current = document.querySelector(`#arrow-${blockId}`).parentElement.lastChild.textContent;
+  const name = prompt("new block name", current);
+  if (!name || !name.trim() || name.trim() === current) return;
+
+  const response = await fetch(`/blocks/${blockId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    alert(`failed: ${error.detail ?? response.status}`);
+    return;
+  }
+  await refresh(null);   // null: a folded block stays folded
+}
+
+// Says what goes with the block before deleting it: files, topics only it has, their notes.
+async function deleteBlock(blockId) {
+  const impact = await fetch(`/blocks/${blockId}/delete-preview`).then(r => r.json());
+  const what = impact.files
+    ? `\n\nThis deletes ${count(impact.files, "file")}, ${count(impact.topics, "topic")} and ${count(impact.notes, "note")}.`
+    : "";
+  if (!confirm(`Delete the block “${impact.name}”?${what}`)) return;
+
+  const response = await fetch(`/blocks/${blockId}`, { method: "DELETE" });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    alert(`failed: ${error.detail ?? response.status}`);
+    return;
+  }
+  openBlocks.delete(blockId);
+  saveOpenBlocks();
+  await refresh(null);
 }
 
 async function uploadFile(blockId) {
