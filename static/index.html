@@ -140,6 +140,7 @@
          border-bottom: 2px solid transparent; border-radius: 0; background: transparent; }
   .tab:hover { color: var(--text); background: transparent; border-color: transparent; border-bottom-color: var(--border-strong); }
   .tab.active { color: var(--text); border-bottom-color: var(--accent-hover); }
+  .tabs-collapse { margin-left: auto; align-self: center; padding: 4px 10px; font-size: 12.5px; }
 
   /* Focus: per block, topics by priority with the reasons next to them */
   .focus-block { margin-bottom: 30px; }
@@ -166,6 +167,9 @@
   .note-tip { position: fixed; z-index: 30; max-width: 380px; padding: 10px 12px; font-size: 13.5px;
               border-radius: var(--radius); background: var(--surface-2); border: 1px solid rgba(79, 209, 197, 0.35);
               box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+  .note-tip.unclear { border-color: rgba(240, 184, 110, 0.4); }
+  .note-tip .tip-faint { color: var(--faint); font-style: italic; }
+  .note-tip-actions button.ghost { padding: 3px 8px; font-size: 12.5px; }
   .note-tip-actions { display: flex; align-items: center; gap: 2px; margin-top: 8px; padding-top: 6px;
                       border-top: 1px solid var(--border); }
   .note-tip-actions .mark-revisit-inline { margin-right: auto; }
@@ -509,6 +513,7 @@
         <button class="tab" id="tab-blocks" role="tab" onclick="setView('blocks')">Blocks</button>
         <button class="tab" id="tab-focus" role="tab" onclick="setView('focus')">Focus</button>
         <button class="tab" id="tab-exams" role="tab" onclick="setView('exams')">Exams</button>
+        <button class="ghost tabs-collapse" title="close every open topic" onclick="collapseAll()">collapse all</button>
       </div>
 
       <div id="blocks"></div>
@@ -538,7 +543,7 @@
     </div>
     <textarea id="mark-comment" rows="2" placeholder="what exactly? (optional)"
               onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveMark(); }"></textarea>
-    <label class="mark-revisit"><input type="checkbox" id="mark-revisit"> come back to this</label>
+    <label class="mark-revisit"><input type="checkbox" id="mark-revisit"> still shaky</label>
     <div class="edit-actions">
       <button class="primary" id="mark-save" onclick="saveMark()">mark</button>
       <button class="ghost" onclick="hideMarkPopover()">cancel</button>
@@ -810,6 +815,12 @@ function closePanel(topicId) {
   forgetOpenPanel(topicId);
 }
 
+// Closes every open topic panel; the blocks stay unfolded.
+function collapseAll() {
+  hideNoteTip();
+  document.querySelectorAll(".panel").forEach(panel => closePanel(Number(panel.id.replace("panel-", ""))));
+}
+
 // Fills the panel with fresh data and shows it. Called to open a panel, and on
 // an open one to redraw it in place (reopenPanel).
 async function renderPanel(topicId, blockId) {
@@ -857,7 +868,7 @@ async function renderPanel(topicId, blockId) {
             ${n.kind === "ai_answer"
               ? `<span class="note-kind assistant">assistant</span>`
               : `<span class="note-kind me">me</span>`}
-            ${n.revisit ? `<span class="note-revisit">↻ come back</span>` : ""}
+            ${n.revisit ? `<span class="note-revisit">still shaky</span>` : ""}
             ${iconButton("edit", "edit note", `editNote(${n.note_id}, ${topicId}, ${blockId})`)}
             ${iconButton("delete", "delete note", `deleteNote(${n.note_id}, ${topicId}, ${blockId})`, "danger")}
           </div>
@@ -930,7 +941,7 @@ async function renderPanel(topicId, blockId) {
 // source "\(...\)", the same way the quote was taken from the selection.
 
 const openUnclear = {};            // struggle id → { text, comment, topicId, blockId, subjectId }
-const unclearRanges = new Map();   // topic id → ranges painted in its open panel
+const unclearSpots = new Map();    // topic id → [{ range, unclear }] painted in its open panel
 
 function textSegments(container) {
   const segments = [];
@@ -1007,21 +1018,22 @@ function rangeForQuote(container, quote) {
 // Paints both kinds of marked text: unclear places and notes on the text.
 function paintUnclear() {
   if (!window.CSS?.highlights || typeof Highlight === "undefined") return;
-  CSS.highlights.set("unclear", new Highlight(...[...unclearRanges.values()].flat()));
+  CSS.highlights.set("unclear", new Highlight(...[...unclearSpots.values()].flat().map(s => s.range)));
   CSS.highlights.set("annotated", new Highlight(...[...annotationSpots.values()].flat().map(s => s.range)));
 }
 
 function forgetHighlights(topicId) {
-  unclearRanges.delete(topicId);
+  unclearSpots.delete(topicId);
   annotationSpots.delete(topicId);
 }
 
 function highlightUnclear(topicId, panel, items) {
   const containers = [...panel.querySelectorAll(".summary, .note .rich")];
-  const ranges = items
-    .map(u => containers.map(c => rangeForQuote(c, u.text)).find(Boolean))
-    .filter(Boolean);
-  unclearRanges.set(topicId, ranges);
+  const spots = items.map(u => {
+    const range = containers.map(c => rangeForQuote(c, u.text)).find(Boolean);
+    return range && { range, unclear: u };
+  }).filter(Boolean);
+  unclearSpots.set(topicId, spots);
   paintUnclear();
 }
 
@@ -1041,35 +1053,53 @@ function highlightAnnotations(topicId, blockId, panel, notes) {
   paintUnclear();
 }
 
+// Notes are checked first: on text that is both, the note shows.
 function spotAt(x, y) {
-  for (const spots of annotationSpots.values()) {
-    for (const spot of spots) {
-      for (const rect of spot.range.getClientRects()) {
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return { spot, rect };
+  for (const spotMap of [annotationSpots, unclearSpots]) {
+    for (const spots of spotMap.values()) {
+      for (const spot of spots) {
+        for (const rect of spot.range.getClientRects()) {
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return { spot, rect };
+        }
       }
     }
   }
   return null;
 }
 
-let tipSpot = null;          // the spot whose note is shown
+let tipSpot = null;          // the spot shown: { note } for a note, { unclear } for an unclear place
 let tipPinned = false;       // editing or confirming: the tip stays put
 let tipHideTimer = null;
 
+const spotKey = spot => spot.note ? `note-${spot.note.note_id}` : `unclear-${spot.unclear.struggle_id}`;
+
 function showNoteTip(spot, rect) {
   const tip = document.getElementById("note-tip");
-  if (tipSpot?.note.note_id !== spot.note.note_id || tip.hidden) {
+  if (!tipSpot || spotKey(tipSpot) !== spotKey(spot) || tip.hidden) {
     tipSpot = spot;
-    const n = spot.note;
-    tip.innerHTML = `
-      <div class="rich note-tip-text">${renderAnswer(n.text)}</div>
-      <div class="note-tip-actions">
-        <label class="mark-revisit-inline">
-          <input type="checkbox" ${n.revisit ? "checked" : ""} onchange="setNoteRevisit(this.checked)"> come back to this
-        </label>
-        ${iconButton("edit", "edit note", "editNoteTip()")}
-        ${iconButton("delete", "delete note", "deleteNoteTip()", "danger")}
-      </div>`;
+    tip.classList.toggle("unclear", !spot.note);
+    if (spot.note) {
+      const n = spot.note;
+      tip.innerHTML = `
+        <div class="rich note-tip-text">${renderAnswer(n.text)}</div>
+        <div class="note-tip-actions">
+          <label class="mark-revisit-inline">
+            <input type="checkbox" ${n.revisit ? "checked" : ""} onchange="setNoteRevisit(this.checked)"> still shaky
+          </label>
+          ${iconButton("edit", "edit note", "editNoteTip()")}
+          ${iconButton("delete", "delete note", "deleteNoteTip()", "danger")}
+        </div>`;
+    } else {
+      // The same actions as in the "Unclear" list of the panel.
+      const u = spot.unclear;
+      tip.innerHTML = `
+        <div class="note-tip-text ${u.comment ? "" : "tip-faint"}">${u.comment ? escapeHtml(u.comment) : "marked as unclear"}</div>
+        <div class="note-tip-actions">
+          <button class="ghost" onclick="hideNoteTip(); askAboutUnclear(${u.struggle_id})">ask</button>
+          <button class="ghost" onclick="resolveFromTip(${u.struggle_id})">✓ got it</button>
+          ${iconButton("delete", "marked by mistake", `tipPinned = true; deleteUnclear(${u.struggle_id}).finally(hideNoteTip)`, "danger")}
+        </div>`;
+    }
     renderMath(tip);
     tip.hidden = false;
   }
@@ -1085,7 +1115,7 @@ function hideNoteTip() {
 }
 
 document.addEventListener("mousemove", event => {
-  if (tipPinned || !annotationSpots.size) return;
+  if (tipPinned || !(annotationSpots.size || unclearSpots.size)) return;
   const tip = document.getElementById("note-tip");
   // moving onto the tip keeps it open, so its buttons can be reached
   if (!tip.hidden && tip.contains(event.target)) {
@@ -1113,6 +1143,14 @@ async function patchNote(noteId, body) {
     alert(`failed: ${error.detail ?? response.status}`);
   }
   return response.ok;
+}
+
+// "got it" from the tip opens the same explain-it field in the panel's list.
+function resolveFromTip(struggleId) {
+  hideNoteTip();
+  const item = document.getElementById(`unclear-item-${struggleId}`);
+  if (item?.querySelector(".unclear-actions")) startResolve(struggleId);
+  item?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 async function setNoteRevisit(checked) {
@@ -1268,7 +1306,7 @@ function startResolve(struggleId) {
     <div class="unclear-resolve">
       <textarea id="resolve-${struggleId}" rows="2"
                 placeholder="explain it in your own words — it stays as a note on this spot (optional)"></textarea>
-      <label class="mark-revisit-inline"><input type="checkbox" id="resolve-revisit-${struggleId}"> come back to this</label>
+      <label class="mark-revisit-inline"><input type="checkbox" id="resolve-revisit-${struggleId}"> still shaky</label>
       <div class="edit-actions">
         <button class="primary" onclick="resolveUnclear(${struggleId})">done</button>
         <button class="ghost" onclick="reopenPanel(${u.topicId}, ${u.blockId})">cancel</button>
@@ -1764,7 +1802,7 @@ function loadView(subjectId) {
   }
 
   // The panels of the view being left disappear, so do their highlights.
-  unclearRanges.clear();
+  unclearSpots.clear();
   annotationSpots.clear();
   paintUnclear();
 
@@ -1779,7 +1817,7 @@ function focusReasons(t) {
     t.unclear ? `<span class="why why-unclear">?${t.unclear} unclear</span>` : "",
     t.status === "review" ? `<span class="why why-review">review</span>` : "",
     t.techniques ? `<span class="why why-technique">✎ ${count(t.techniques, "technique")}</span>` : "",
-    t.revisit ? `<span class="why why-revisit">↻ ${t.revisit} to revisit</span>` : "",
+    t.revisit ? `<span class="why why-revisit">${t.revisit} still shaky</span>` : "",
   ].join("");
 }
 
