@@ -758,6 +758,13 @@ function revealField(boxId, fieldId) {
   if (!box.hidden) document.getElementById(fieldId).focus();
 }
 
+// Hides an upload row and forgets the chosen file; "+ upload" opens it again.
+function closeUpload(boxId) {
+  const box = document.getElementById(boxId);
+  box.querySelector("input[type=file]").value = "";
+  box.hidden = true;
+}
+
 // A topic has at most one panel on the whole page, created under the row that
 // was clicked. The same topic can sit in several blocks; one panel per row
 // gave two elements the id panel-217, getElementById found the first one,
@@ -1852,6 +1859,7 @@ function renderExamSection({ kind, title, icon, empty }, exams) {
       <div class="upload" id="exam-upload-${kind}" hidden>
         <input type="file" id="exam-file-${kind}" accept="application/pdf">
         <button onclick="uploadExam('${kind}')">upload</button>
+        ${iconButton("close", "close (esc)", `closeUpload('exam-upload-${kind}')`, "cancel")}
         <span class="progress" id="exam-progress-${kind}"></span>
       </div>
       ${exams.map(e => renderExamFile(e, icon)).join("") || `<p class="empty exam-empty">${empty}</p>`}
@@ -2214,6 +2222,7 @@ async function toggleBlock(blockId) {
         <option value="other">other</option>
       </select>
       <button onclick="uploadFile(${blockId})">upload</button>
+      ${iconButton("close", "close (esc)", `closeUpload('upload-${blockId}')`, "cancel")}
       <span class="${upload?.failed ? "progress failed" : "progress"}" id="progress-${blockId}">${escapeHtml(upload?.text ?? "")}</span>
     </div>`;
 
