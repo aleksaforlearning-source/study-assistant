@@ -22,3 +22,6 @@ Thumbs.db
 # Project
 uploads/
 *.log
+backups/
+schema_dump.sql
+.archify/
