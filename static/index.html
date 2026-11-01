@@ -147,6 +147,8 @@
   .ds-counts { color: var(--text) !important; font-weight: 600; margin-bottom: 16px !important; }
   .ds-label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .ad-text { white-space: pre-line; }
+  #ad-input { width: 100%; margin-top: 4px; }
   .danger-btn { background: var(--red); border-color: var(--red); color: #fff; }
   .danger-btn:hover { background: #e9808a; border-color: #e9808a; }
   .danger-btn:disabled, .danger-btn:disabled:hover { background: var(--surface-2); border-color: var(--border); color: var(--faint); }
@@ -553,6 +555,17 @@
     </div>
   </div>
 
+  <!-- The app's own message, confirm and name dialog, in place of the browser's alert/confirm/prompt -->
+  <dialog class="confirm-dialog" id="app-dialog">
+    <h2 id="ad-title"></h2>
+    <p class="ad-text" id="ad-text"></p>
+    <input id="ad-input" autocomplete="off">
+    <div class="dialog-actions">
+      <button class="ghost" id="ad-cancel">cancel</button>
+      <button class="primary" id="ad-ok">ok</button>
+    </div>
+  </dialog>
+
   <dialog class="confirm-dialog" id="delete-subject">
     <h2>Delete subject “<span id="ds-name"></span>”?</h2>
     <p>Everything inside will be deleted:</p>
@@ -620,6 +633,67 @@ const escapeHtml = text => text
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;")
   .replace(/'/g, "&#39;");
+
+// ---- Dialogs in the app's style: showAlert, askConfirm, askText ----
+// One <dialog> serves all three. Each returns a promise: askConfirm gives
+// true or false, askText the typed text or null; Esc and cancel say no.
+
+function openAppDialog({ title, text = "", input = null, ok = "ok", cancel = true, danger = false }) {
+  const dialog = document.getElementById("app-dialog");
+  const field = document.getElementById("ad-input");
+  const okButton = document.getElementById("ad-ok");
+  const cancelButton = document.getElementById("ad-cancel");
+
+  document.getElementById("ad-title").textContent = title;
+  const textBox = document.getElementById("ad-text");
+  textBox.textContent = text;
+  textBox.hidden = !text;
+  field.hidden = input === null;
+  field.value = input ?? "";
+  cancelButton.hidden = !cancel;
+  okButton.textContent = ok;
+  okButton.className = danger ? "danger-btn" : "primary";
+
+  return new Promise(resolve => {
+    const finish = value => {
+      dialog.close();
+      resolve(value);
+    };
+    okButton.onclick = () => finish(input === null ? true : field.value);
+    cancelButton.onclick = () => finish(input === null ? false : null);
+    // Esc closes a <dialog> by itself; this makes it answer "no" first.
+    dialog.oncancel = event => {
+      event.preventDefault();
+      cancelButton.onclick();
+    };
+    field.onkeydown = event => {
+      if (event.key === "Enter") okButton.onclick();
+    };
+    dialog.showModal();
+    if (input === null) okButton.focus();
+    else field.select();
+  });
+}
+
+// The first paragraph is the title, the rest the text under it.
+const splitMessage = message => {
+  const [title, ...rest] = String(message).split("\n\n");
+  return { title, text: rest.join("\n\n") };
+};
+
+// "failed: <reason>" from the server becomes a titled error.
+function showAlert(message) {
+  const failed = String(message).match(/^failed(?: to [^:]+)?: ([\s\S]*)$/);
+  return openAppDialog(failed
+    ? { title: "Something went wrong", text: failed[1], cancel: false }
+    : { ...splitMessage(message), cancel: false });
+}
+
+const askConfirm = (message, { ok = "ok", danger = false } = {}) =>
+  openAppDialog({ ...splitMessage(message), ok, danger });
+
+const askText = (title, value = "", ok = "save") =>
+  openAppDialog({ title, input: value, ok });
 
 // count(1, "topic") → "1 topic", count(3, "topic") → "3 topics"
 const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -1171,7 +1245,7 @@ async function patchNote(noteId, body) {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    alert(`failed: ${error.detail ?? response.status}`);
+    showAlert(`failed: ${error.detail ?? response.status}`);
   }
   return response.ok;
 }
@@ -1310,7 +1384,7 @@ async function saveMark() {
       });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
 
@@ -1360,7 +1434,7 @@ async function resolveUnclear(struggleId) {
   });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
   await reopenPanel(u.topicId, u.blockId);
@@ -1368,7 +1442,7 @@ async function resolveUnclear(struggleId) {
 
 async function deleteUnclear(struggleId) {
   const u = openUnclear[struggleId];
-  if (!confirm("Remove this mark? (If you've understood it, use “✓ got it” instead.)")) return;
+  if (!await askConfirm("Remove this mark?\n\nIf you've understood it, use “✓ got it” instead.", { ok: "remove", danger: true })) return;
   await fetch(`/struggles/${struggleId}`, { method: "DELETE" });
   await reopenPanel(u.topicId, u.blockId);
 }
@@ -1386,7 +1460,7 @@ async function saveNote(topicId, blockId) {
   // On a failure the draft stays in the field, so nothing typed is lost.
   if (!response?.ok) {
     const error = response ? await response.json().catch(() => ({})) : {};
-    alert(`failed: ${error.detail ?? (response ? response.status : "the server is not reachable")}`);
+    showAlert(`failed: ${error.detail ?? (response ? response.status : "the server is not reachable")}`);
     return;
   }
 
@@ -1541,7 +1615,7 @@ async function saveAnswer(topicId, blockId, index, button) {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    alert(`failed: ${error.detail ?? response.status}`);
+    showAlert(`failed: ${error.detail ?? response.status}`);
     if (button) {
       button.disabled = false;
       button.textContent = "save as note";
@@ -1564,12 +1638,12 @@ async function reopenPanel(topicId, blockId) {
 }
 
 async function deleteNote(noteId, topicId, blockId) {
-  if (!confirm("Delete this note?")) return;
+  if (!await askConfirm("Delete this note?", { ok: "delete", danger: true })) return;
 
   const response = await fetch(`/notes/${noteId}`, { method: "DELETE" });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    alert(`failed: ${error.detail ?? response.status}`);
+    showAlert(`failed: ${error.detail ?? response.status}`);
     return;
   }
   await reopenPanel(topicId, blockId);
@@ -1597,7 +1671,7 @@ async function saveNoteEdit(noteId, topicId, blockId) {
 
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
 
@@ -1698,7 +1772,7 @@ async function renameSubject() {
   const subject = currentSubject();
   if (!subject) return;
 
-  const name = prompt("new subject name", subject.name);
+  const name = await askText("Rename subject", subject.name);
   if (!name || !name.trim() || name.trim() === subject.name) return;
 
   const response = await fetch(`/subjects/${subject.id}`, {
@@ -1708,7 +1782,7 @@ async function renameSubject() {
   });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
   await loadSubjects();
@@ -1742,7 +1816,7 @@ async function deleteSubject() {
   const response = await fetch(`/subjects/${subject.id}`, { method: "DELETE" });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
 
@@ -1828,7 +1902,7 @@ async function saveExam(value) {
   if (!response.ok) {
     const error = await response.json();
     // FastAPI sends a list of problems for an invalid value, a plain string otherwise
-    alert(`failed: ${typeof error.detail === "string" ? error.detail : "invalid date"}`);
+    showAlert(`failed: ${typeof error.detail === "string" ? error.detail : "invalid date"}`);
     return;
   }
 
@@ -1962,7 +2036,7 @@ const shortBlockName = name => (name || "").split(":")[0];
 // Only the name shown in the app; ".pdf" is added back by the server.
 async function renameSource(sourceId) {
   const current = fileTitle(sourceNames[sourceId] || "");
-  const name = prompt("new name", current);
+  const name = await askText("Rename exam", current);
   if (!name || !name.trim() || name.trim() === current) return;
 
   const response = await fetch(`/sources/${sourceId}`, {
@@ -1972,7 +2046,7 @@ async function renameSource(sourceId) {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    alert(`failed: ${error.detail ?? response.status}`);
+    showAlert(`failed: ${error.detail ?? response.status}`);
     return;
   }
   await refresh(null);
@@ -2145,13 +2219,14 @@ async function uploadExam(kind) {
 }
 
 async function analyseExam(sourceId, again = false) {
-  if (again && !confirm("Analyse this exam again? Its questions and topic links will be replaced. " +
-                        "Topics you linked by hand are kept for questions with the same number.")) return;
+  if (again && !await askConfirm("Analyse this exam again?\n\nIts questions and topic links will be replaced. " +
+                                 "Topics you linked by hand are kept for questions with the same number.",
+                                 { ok: "analyse again" })) return;
 
   const response = await fetch(`/sources/${sourceId}/analyse`, { method: "POST" });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
   const { job_id } = await response.json();
@@ -2208,7 +2283,7 @@ async function linkExamTopic(questionId, select) {
   });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
   }
   await loadExams(document.getElementById("subject").value);
 }
@@ -2470,12 +2545,12 @@ async function deleteSource(sourceId, blockId) {
     if (impact.notes) message += `, with ${count(impact.notes, "note")}`;
     message += ".";
   }
-  if (!confirm(message)) return;
+  if (!await askConfirm(message, { ok: "delete", danger: true })) return;
 
   const response = await fetch(`/sources/${sourceId}`, { method: "DELETE" });
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return;
   }
 
@@ -2614,7 +2689,7 @@ async function patchTopic(topicId, body) {
 
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed: ${error.detail}`);
+    showAlert(`failed: ${error.detail}`);
     return false;
   }
   return true;
@@ -2660,7 +2735,7 @@ async function dropTopic(event, parentId, blockId) {
   const question = parentId == null
     ? `Make “${title(topicId)}” a top-level topic?`
     : `Move “${title(topicId)}” under “${title(parentId)}”?`;
-  if (!confirm(question)) return;
+  if (!await askConfirm(question, { ok: "move" })) return;
 
   if (await patchTopic(topicId, { parent_id: parentId })) {
     await refresh(blockId);
@@ -2669,7 +2744,7 @@ async function dropTopic(event, parentId, blockId) {
 
 async function makeRoot(topicId, blockId) {
   const title = document.getElementById(`title-${topicId}`)?.textContent ?? "this topic";
-  if (!confirm(`Make “${title}” a top-level topic?`)) return;
+  if (!await askConfirm(`Make “${title}” a top-level topic?`, { ok: "move" })) return;
   if (await patchTopic(topicId, { parent_id: null })) {
     await refresh(blockId);
   }
@@ -2695,7 +2770,7 @@ async function cycleStatus(topicId, current, blockId) {
 
 async function renameTopic(topicId, blockId) {
   const current = document.getElementById(`title-${topicId}`).textContent;
-  const title = prompt("new topic name", current);
+  const title = await askText("Rename topic", current);
 
   if (!title || title === current) return;
   if (await patchTopic(topicId, { title })) {
@@ -2705,14 +2780,14 @@ async function renameTopic(topicId, blockId) {
 
 async function deleteTopic(topicId, blockId) {
   const title = document.getElementById(`title-${topicId}`).textContent;
-  if (!confirm(`Delete topic “${title}”?`)) return;
+  if (!await askConfirm(`Delete topic “${title}”?`, { ok: "delete", danger: true })) return;
 
   await fetch(`/topics/${topicId}`, { method: "DELETE" });
   await refresh(blockId);
 }
 
 async function addSubject() {
-  const name = prompt("subject name");
+  const name = await askText("New subject", "", "create");
   if (!name || !name.trim()) return;
 
   const response = await fetch("/subjects", {
@@ -2722,7 +2797,7 @@ async function addSubject() {
   });
 
   if (!response.ok) {
-    alert("failed to create subject");
+    showAlert("failed: the subject could not be created");
     return;
   }
 
@@ -2736,7 +2811,7 @@ async function addBlock() {
   const subjectId = document.getElementById("subject").value;
   if (!subjectId) return;
 
-  const name = prompt("block name, e.g. Lecture 3 — Heaps");
+  const name = await askText("New block, e.g. Lecture 3 — Heaps", "", "create");
   if (!name || !name.trim()) return;
 
   const response = await fetch(`/subjects/${subjectId}/blocks`, {
@@ -2747,7 +2822,7 @@ async function addBlock() {
 
   if (!response.ok) {
     const error = await response.json();
-    alert(`failed to create block: ${error.detail}`);
+    showAlert(`failed to create block: ${error.detail}`);
     return;
   }
 
@@ -2757,7 +2832,7 @@ async function addBlock() {
 
 async function renameBlock(blockId) {
   const current = document.querySelector(`#arrow-${blockId}`).parentElement.lastChild.textContent;
-  const name = prompt("new block name", current);
+  const name = await askText("Rename block", current);
   if (!name || !name.trim() || name.trim() === current) return;
 
   const response = await fetch(`/blocks/${blockId}`, {
@@ -2767,7 +2842,7 @@ async function renameBlock(blockId) {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    alert(`failed: ${error.detail ?? response.status}`);
+    showAlert(`failed: ${error.detail ?? response.status}`);
     return;
   }
   await refresh(null);   // null: a folded block stays folded
@@ -2779,12 +2854,12 @@ async function deleteBlock(blockId) {
   const what = impact.files
     ? `\n\nThis deletes ${count(impact.files, "file")}, ${count(impact.topics, "topic")} and ${count(impact.notes, "note")}.`
     : "";
-  if (!confirm(`Delete the block “${impact.name}”?${what}`)) return;
+  if (!await askConfirm(`Delete the block “${impact.name}”?${what}`, { ok: "delete", danger: true })) return;
 
   const response = await fetch(`/blocks/${blockId}`, { method: "DELETE" });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    alert(`failed: ${error.detail ?? response.status}`);
+    showAlert(`failed: ${error.detail ?? response.status}`);
     return;
   }
   openBlocks.delete(blockId);
@@ -2886,7 +2961,7 @@ async function makeSummary(topicId, blockId) {
 
   const result = await response.json();
   if (!result.saved) {
-    alert("you edited this summary by hand, so it was not overwritten");
+    showAlert("you edited this summary by hand, so it was not overwritten");
     return;
   }
 
