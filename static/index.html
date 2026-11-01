@@ -210,6 +210,8 @@
   .exam-section-head { display: flex; justify-content: space-between; align-items: center;
                        margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--surface-2); }
   .exam-section-title { font-weight: 600; }
+  .exam-section-head.foldable { cursor: pointer; user-select: none; }
+  .exam-section-head.foldable:hover .exam-section-title { color: #fff; }
   .exam-empty { margin: 6px 0; font-size: 13px; }
   .exam-file { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 2px 6px; margin: 0 -6px; border-radius: 6px; }
   .exam-file:hover { background: var(--surface); }
@@ -2076,6 +2078,33 @@ async function loadExams(subjectId) {
   exams.filter(e => e.analysis?.status === "running").forEach(e => watchExamJob(e.analysis.job_id, e.source_id));
 }
 
+// ---- Foldable sections of Exams and Homework; a fold is remembered ----
+
+const FOLDED_SECTIONS_KEY = "study-assistant:folded-sections";
+const foldedSections = new Set(loadState(FOLDED_SECTIONS_KEY, []));
+
+// The actions sit in the head; using one ("+ upload") unfolds the section, since what it shows is inside.
+function foldableSection(key, title, actions, body) {
+  const folded = foldedSections.has(key);
+  return `
+    <section class="exam-section">
+      <div class="exam-section-head foldable" onclick="toggleSection('${key}')">
+        <span class="exam-section-title"><span class="arrow" id="sec-arrow-${key}">${folded ? "▸" : "▾"}</span>${title}</span>
+        <span onclick="event.stopPropagation(); if (foldedSections.has('${key}')) toggleSection('${key}')">${actions}</span>
+      </div>
+      <div id="sec-body-${key}" ${folded ? "hidden" : ""}>${body}</div>
+    </section>`;
+}
+
+function toggleSection(key) {
+  const body = document.getElementById(`sec-body-${key}`);
+  body.hidden = !body.hidden;
+  document.getElementById(`sec-arrow-${key}`).textContent = body.hidden ? "▸" : "▾";
+  if (body.hidden) foldedSections.add(key);
+  else foldedSections.delete(key);
+  saveState(FOLDED_SECTIONS_KEY, [...foldedSections]);
+}
+
 // Focus already lists every topic grouped by block, which is what the "+ link topic" picker needs.
 const topicOptions = focus => focus.map(b => `
   <optgroup label="${escapeHtml(b.name)}">
@@ -2098,20 +2127,18 @@ async function loadHomework(subjectId) {
     return;
   }
 
-  target.innerHTML = blocks.map(b => `
-    <section class="exam-section">
-      <div class="exam-section-head">
-        <span class="exam-section-title">✎ ${escapeHtml(b.name)}</span>
-        <button class="ghost" onclick="revealField('hw-upload-${b.block_id}', 'hw-file-${b.block_id}')">+ upload</button>
-      </div>
-      <div class="upload" id="hw-upload-${b.block_id}" hidden>
-        <input type="file" id="hw-file-${b.block_id}" accept="application/pdf">
-        <button onclick="uploadHomework(${b.block_id})">upload</button>
-        ${iconButton("close", "close (esc)", `closeUpload('hw-upload-${b.block_id}')`, "cancel")}
-        <span class="progress" id="hw-progress-${b.block_id}"></span>
-      </div>
-      ${b.files.map(f => renderExamFile(f, "✎")).join("") || `<p class="empty exam-empty">no homework yet</p>`}
-    </section>`).join("");
+  target.innerHTML = blocks.map(b => foldableSection(
+    `hw-${b.block_id}`,
+    `✎ ${escapeHtml(b.name)}`,
+    `<button class="ghost" onclick="revealField('hw-upload-${b.block_id}', 'hw-file-${b.block_id}')">+ upload</button>`,
+    `<div class="upload" id="hw-upload-${b.block_id}" hidden>
+       <input type="file" id="hw-file-${b.block_id}" accept="application/pdf">
+       <button onclick="uploadHomework(${b.block_id})">upload</button>
+       ${iconButton("close", "close (esc)", `closeUpload('hw-upload-${b.block_id}')`, "cancel")}
+       <span class="progress" id="hw-progress-${b.block_id}"></span>
+     </div>
+     ${b.files.map(f => renderExamFile(f, "✎")).join("") || `<p class="empty exam-empty">no homework yet</p>`}`,
+  )).join("");
   renderMath(target);
 
   // An analysis started before a reload keeps being watched.
@@ -2145,20 +2172,18 @@ async function uploadHomework(blockId) {
 }
 
 function renderExamSection({ kind, title, icon, empty }, exams) {
-  return `
-    <section class="exam-section">
-      <div class="exam-section-head">
-        <span class="exam-section-title">${icon} ${title}</span>
-        <button class="ghost" onclick="revealField('exam-upload-${kind}', 'exam-file-${kind}')">+ upload</button>
-      </div>
-      <div class="upload" id="exam-upload-${kind}" hidden>
-        <input type="file" id="exam-file-${kind}" accept="application/pdf">
-        <button onclick="uploadExam('${kind}')">upload</button>
-        ${iconButton("close", "close (esc)", `closeUpload('exam-upload-${kind}')`, "cancel")}
-        <span class="progress" id="exam-progress-${kind}"></span>
-      </div>
-      ${exams.map(e => renderExamFile(e, icon)).join("") || `<p class="empty exam-empty">${empty}</p>`}
-    </section>`;
+  return foldableSection(
+    `exam-${kind}`,
+    `${icon} ${title}`,
+    `<button class="ghost" onclick="revealField('exam-upload-${kind}', 'exam-file-${kind}')">+ upload</button>`,
+    `<div class="upload" id="exam-upload-${kind}" hidden>
+       <input type="file" id="exam-file-${kind}" accept="application/pdf">
+       <button onclick="uploadExam('${kind}')">upload</button>
+       ${iconButton("close", "close (esc)", `closeUpload('exam-upload-${kind}')`, "cancel")}
+       <span class="progress" id="exam-progress-${kind}"></span>
+     </div>
+     ${exams.map(e => renderExamFile(e, icon)).join("") || `<p class="empty exam-empty">${empty}</p>`}`,
+  );
 }
 
 function examStateHtml(e) {
@@ -2250,11 +2275,7 @@ function renderMostAsked(exams) {
           `<button class="most-ref" onclick="openPdf(${r.sourceId}, ${r.page})">${escapeHtml(r.label)}</button>`).join("")}</span>
       </div>`).join("");
 
-  return `
-    <section class="exam-section">
-      <div class="exam-section-head"><span class="exam-section-title">Most asked</span></div>
-      ${rows}
-    </section>`;
+  return foldableSection("most-asked", "Most asked", "", rows);
 }
 
 function toggleExam(sourceId, button) {
