@@ -314,8 +314,15 @@
   .topic-parent { font-size: 12px; color: var(--faint); white-space: nowrap;
                   overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
   .topic-weight { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
-  .topic .topic-weight { flex: none; max-width: 33%; text-align: right; white-space: nowrap;
-                         overflow: hidden; text-overflow: ellipsis; }
+  .topic .topic-weight { position: relative; flex: none; max-width: 33%; text-align: right; }
+  .pages-short { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* all the pages, shown while the mouse is on the shortened list */
+  .pages-full { display: none; position: absolute; right: 0; top: calc(100% + 4px); z-index: 25;
+                width: max-content; max-width: 320px; padding: 6px 10px; text-align: left;
+                font-size: 12.5px; line-height: 1.5; color: var(--text); background: var(--surface-2);
+                border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
+  .topic-weight:hover .pages-full { display: block; }
+  .topic-weight:has(.pages-full) { cursor: default; }
   /* room for all three buttons in every row, so the pages line up in one column */
   .topic-actions { display: flex; justify-content: flex-end; flex: none; width: 84px; }
   .topic .icon-btn { opacity: 0; transition: opacity .12s; }
@@ -2799,7 +2806,10 @@ async function toggleBlock(blockId) {
       <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId}, this)">${escapeHtml(t.title)}</span>
       ${awayFrom ? `<span class="topic-parent" title="subtopic of ${escapeHtml(awayFrom)}">under ${escapeHtml(awayFrom)}</span>` : ""}
       <span class="unclear-badge" id="unclear-${t.id}" title="unclear places" ${t.unclear ? "" : "hidden"}>?${t.unclear || 0}</span>
-      <span class="topic-weight" title="${pageRanges(t.pages)}">${pageRanges(t.pages, 3)}</span>
+      <span class="topic-weight">
+        <span class="pages-short">${pageRanges(t.pages, 3)}</span>
+        ${pageRanges(t.pages, 3) !== pageRanges(t.pages) ? `<span class="pages-full">${pageRanges(t.pages)}</span>` : ""}
+      </span>
       <span class="topic-actions">
         ${isChild ? iconButton("outdent", "make it a top-level topic", `makeRoot(${t.id}, ${blockId})`) : ""}
         ${iconButton("rename", "rename", `renameTopic(${t.id}, ${blockId})`)}
