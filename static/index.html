@@ -299,7 +299,8 @@
   .topic-parent { font-size: 12px; color: var(--faint); white-space: nowrap;
                   overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
   .topic-weight { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
-  .topic .topic-weight { flex: none; text-align: right; }
+  .topic .topic-weight { flex: none; max-width: 33%; text-align: right; white-space: nowrap;
+                         overflow: hidden; text-overflow: ellipsis; }
   /* room for all three buttons in every row, so the pages line up in one column */
   .topic-actions { display: flex; justify-content: flex-end; flex: none; width: 84px; }
   .topic .icon-btn { opacity: 0; transition: opacity .12s; }
@@ -440,6 +441,8 @@
      inside the panel instead of running out of it. The padding keeps
      exponents and big brackets from being cut by the scroll box. */
   .rich .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+  .katex.katex-wide { display: inline-block; max-width: 100%; overflow-x: auto; overflow-y: hidden;
+                      vertical-align: middle; padding: 2px 0; }
   .rich { overflow-wrap: break-word; }
   .md-table { border-collapse: collapse; font-size: .95em; }
   .md-table th, .md-table td { padding: 6px 10px; text-align: left; vertical-align: top; border: 1px solid var(--border); }
@@ -734,8 +737,9 @@ const ICONS = {
   close: `<path d="M18 6 6 18"/><path d="m6 6 12 12"/>`,
 };
 
-// [3, 4, 5, 9] → "p. 3–5, 9"
-function pageRanges(pages) {
+// [3, 4, 5, 9] → "p. 3–5, 9". With a limit, only the first ranges and "+N"
+// for the rest: a topic spread over a long lecture had 30 of them.
+function pageRanges(pages, limit = Infinity) {
   if (!pages?.length) return "";
   const ranges = [];
   pages.forEach(p => {
@@ -743,7 +747,8 @@ function pageRanges(pages) {
     if (last && p === last[1] + 1) last[1] = p;
     else ranges.push([p, p]);
   });
-  return "p. " + ranges.map(([a, b]) => a === b ? a : `${a}–${b}`).join(", ");
+  const shown = ranges.slice(0, limit).map(([a, b]) => a === b ? a : `${a}–${b}`).join(", ");
+  return `p. ${shown}${ranges.length > limit ? ` +${ranges.length - limit}` : ""}`;
 }
 
 const icon = name => `<svg class="ico" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
@@ -779,6 +784,19 @@ function renderMath(el) {
     ],
     throwOnError: false,
     strict: "ignore",
+  });
+  // Next frame: a panel is drawn hidden and shown right after, widths are 0 until then.
+  requestAnimationFrame(() => markWideFormulas(el));
+}
+
+// A formula inside a line cannot wrap. One wider than its line gets its own
+// sideways-scrolling box instead of running out of the panel; the rest stay
+// inline as they are, so their alignment with the text does not change.
+function markWideFormulas(el) {
+  el.querySelectorAll(".katex").forEach(formula => {
+    if (formula.closest(".katex-display")) return;
+    const line = formula.parentElement.closest("p, li, td, th, blockquote, div");
+    if (line && formula.offsetWidth > line.clientWidth) formula.classList.add("katex-wide");
   });
 }
 
@@ -2681,7 +2699,7 @@ async function toggleBlock(blockId) {
       <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId}, this)">${escapeHtml(t.title)}</span>
       ${awayFrom ? `<span class="topic-parent" title="subtopic of ${escapeHtml(awayFrom)}">under ${escapeHtml(awayFrom)}</span>` : ""}
       <span class="unclear-badge" id="unclear-${t.id}" title="unclear places" ${t.unclear ? "" : "hidden"}>?${t.unclear || 0}</span>
-      <span class="topic-weight" title="pages of the lecture this topic is on">${pageRanges(t.pages)}</span>
+      <span class="topic-weight" title="${pageRanges(t.pages)}">${pageRanges(t.pages, 3)}</span>
       <span class="topic-actions">
         ${isChild ? iconButton("outdent", "make it a top-level topic", `makeRoot(${t.id}, ${blockId})`) : ""}
         ${iconButton("rename", "rename", `renameTopic(${t.id}, ${blockId})`)}
