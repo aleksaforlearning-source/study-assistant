@@ -8,6 +8,9 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<!-- syntax highlighting for code files in the viewer -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
   :root {
     color-scheme: dark;
@@ -64,6 +67,9 @@
                 border-bottom: 1px solid var(--border); }
   .viewer-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .viewer iframe { flex: 1; width: 100%; border: 0; background: var(--surface-2); }
+  .text-view { flex: 1; overflow: auto; padding: 16px 20px; }
+  .text-view pre { margin: 0; font-size: 13px; line-height: 1.55; }
+  .text-view pre code.hljs { padding: 0; background: transparent; }
 
   /* controls */
   button { font: inherit; font-size: 13px; color: var(--text); cursor: pointer;
@@ -628,6 +634,8 @@
       </button>
     </div>
     <iframe id="pdf-frame"></iframe>
+    <!-- a code or Markdown file is shown here instead of the PDF frame -->
+    <div class="text-view" id="text-view" hidden></div>
   </div>
 
 </div>
@@ -2217,6 +2225,9 @@ const fileTitle = filename => filename.replace(/\.pdf$/i, "");
 // Every upload takes a PDF or photos; several photos become one PDF, in the order picked.
 const UPLOAD_ACCEPT = "application/pdf,image/png,image/jpeg,image/webp";
 const UPLOAD_HINT = "a PDF, or photos (PNG, JPEG) — several photos become one file";
+// Blocks also keep code and Markdown, shown as they are (the server's TEXT_EXTENSIONS).
+const CODE_ACCEPT = ".py,.java,.kt,.scala,.c,.h,.cpp,.hpp,.cc,.cs,.go,.rs,.js,.ts,.rb,.php,.swift," +
+  ".hs,.ml,.r,.m,.jl,.sql,.sh,.md,.txt,.tex,.json,.yaml,.yml,.csv";
 // "Chapter 8: Multivariate calculus" → "Chapter 8"
 const shortBlockName = name => (name || "").split(":")[0];
 
@@ -2715,7 +2726,8 @@ async function toggleBlock(blockId) {
   // and while an upload of this block is in progress.
   const uploadRow = `
     <div class="upload" id="upload-${blockId}" ${files.length && !upload ? "hidden" : ""}>
-      <input type="file" id="file-${blockId}" accept="${UPLOAD_ACCEPT}" multiple title="${UPLOAD_HINT}">
+      <input type="file" id="file-${blockId}" accept="${UPLOAD_ACCEPT},${CODE_ACCEPT}" multiple
+             title="${UPLOAD_HINT}; or one code or Markdown file to view">
       <select id="type-${blockId}">
         <option value="lecture">lecture</option>
         <option value="homework">homework</option>
@@ -2780,8 +2792,8 @@ function renderMaterials(files, blockId) {
       const name = escapeHtml(f.filename.replace(/\.pdf$/i, ""));
       return `
         <span class="chip-file chip-${type}" ${i >= MATERIALS_VISIBLE ? "hidden" : ""}>
-          <button class="chip-open" title="${escapeHtml(f.filename)}" ${f.has_pdf ? "" : "disabled"}
-                  onclick="openPdf(${f.source_id}, 1)">
+          <button class="chip-open" title="${escapeHtml(f.filename)}" ${f.has_pdf || f.has_text ? "" : "disabled"}
+                  onclick="${f.has_text ? `openText(${f.source_id})` : `openPdf(${f.source_id}, 1)`}">
             <span class="chip-icon">${icon}</span><span class="chip-name">${name}</span>
           </button>
           <button class="chip-delete" title="delete file" aria-label="delete file"
@@ -3264,18 +3276,52 @@ async function saveSummary(topicId, blockId) {
 }
 const sourceNames = {};
 
+// The viewer on the right shows either a PDF (in the frame) or a text file (in text-view).
+function showViewer(name, asText) {
+  document.getElementById("viewer-name").textContent = name;
+  document.getElementById("pdf-frame").hidden = asText;
+  document.getElementById("text-view").hidden = !asText;
+  document.getElementById("viewer").classList.add("open");
+  document.getElementById("divider").classList.add("open");
+}
+
 function openPdf(sourceId, page) {
   const frame = document.getElementById("pdf-frame");
   frame.src = `/sources/${sourceId}/pdf?t=${Date.now()}#page=${page}`;
-  document.getElementById("viewer-name").textContent = sourceNames[sourceId] || "";
-  document.getElementById("viewer").classList.add("open");
-  document.getElementById("divider").classList.add("open");
+  showViewer(sourceNames[sourceId] || "", false);
+}
+
+// Markdown is drawn like a summary, formulas included; code is highlighted.
+// highlight.js guesses the language from the extension, or from the code.
+async function openText(sourceId) {
+  const response = await fetch(`/sources/${sourceId}/text`);
+  if (!response.ok) {
+    showAlert(`failed: ${(await response.json().catch(() => ({}))).detail ?? response.status}`);
+    return;
+  }
+  const { filename, text } = await response.json();
+  const view = document.getElementById("text-view");
+  const extension = filename.split(".").pop().toLowerCase();
+
+  if (extension === "md") {
+    view.innerHTML = `<div class="rich">${renderAnswer(text)}</div>`;
+    renderMath(view);
+  } else {
+    view.innerHTML = `<pre><code>${escapeHtml(text)}</code></pre>`;
+    const code = view.querySelector("code");
+    if (window.hljs?.getLanguage(extension)) code.classList.add(`language-${extension}`);
+    if (window.hljs && extension !== "txt") hljs.highlightElement(code);
+  }
+  view.scrollTop = 0;
+  document.getElementById("pdf-frame").src = "";
+  showViewer(filename, true);
 }
 
 function closeViewer() {
   document.getElementById("viewer").classList.remove("open");
   document.getElementById("divider").classList.remove("open");
   document.getElementById("pdf-frame").src = "";
+  document.getElementById("text-view").innerHTML = "";
 }
 
 document.getElementById("divider").onmousedown = event => {

@@ -123,3 +123,6 @@ SELECT 'Semester 3'
 WHERE EXISTS (SELECT 1 FROM subjects WHERE semester_id IS NULL)
   AND NOT EXISTS (SELECT 1 FROM semesters);
 UPDATE subjects SET semester_id = (SELECT min(id) FROM semesters) WHERE semester_id IS NULL;
+
+-- A code or Markdown file, shown as it is: no PDF, no pages, no topics.
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS text_content TEXT;
