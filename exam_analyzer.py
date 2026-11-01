@@ -1,4 +1,4 @@
-"""Splits an exam PDF into questions and links each to the subject's topics.
+"""Splits an exam or homework PDF into questions and links each to the subject's topics.
 
 Each page is read the cheapest way that still gets it right: pages with math
 fonts, and scans with no text layer, go as an image to the vision model (the
@@ -49,6 +49,33 @@ Course topics (id | title | block of the course where it is taught):
 {topics}
 {page_text}"""
 
+# A homework file often has the solutions in it. The task statement is what is
+# shown; the solution is the best hint at the topics, since it shows the methods.
+HOMEWORK_PROMPT = r"""This is page {page} of {pages} of a homework sheet in the course "{subject}"{how}.
+It may contain the solutions too.
+
+Find every task on this page and write each one like this:
+
+=== QUESTION 2b
+topics: 12, 15
+continues: no
+The task statement as Markdown, copied exactly; leave the solution out. Every
+formula as LaTeX: inline \( ... \), display $$ ... $$.
+
+Rules:
+- After "=== QUESTION" write the task number as printed ("1", "2b"), or nothing if there is none
+- "topics": ids from the course topic list below that the task really practises,
+  most specific first, at most 3. Judge by the solution when there is one: the
+  methods it uses are the topics. Write "topics: none" if nothing fits
+- "continues: yes" for a task or a solution that started on the previous page;
+  if the page only has the rest of a solution, write its "topics" line and no text
+- Skip the cover page, instructions and point tables
+- If the page has no task and no solution at all, answer only: NO QUESTIONS
+
+Course topics (id | title | block of the course where it is taught):
+{topics}
+{page_text}"""
+
 QUESTION_HEADER = re.compile(r"^=== QUESTION[ \t]*(.*)$", re.M)
 META_LINE = re.compile(r"^(topics|continues)\s*:", re.I)
 
@@ -83,12 +110,14 @@ def parse_page(answer: str) -> list[dict]:
             meta[key.strip().lower()] = value.strip()
 
         text = clean_transcription("\n".join(lines).strip())
-        if not text:
+        continues = meta.get("continues", "no").lower().startswith("y")
+        # A continuation may be only the rest of a solution: no text, but its topics count.
+        if not text and not continues:
             continue
         questions.append({
             "number": number.strip() or None,
             "text": text,
-            "continues": meta.get("continues", "no").lower().startswith("y"),
+            "continues": continues,
             "topic_ids": [int(x) for x in re.findall(r"\d+", meta.get("topics", ""))],
         })
     return questions
@@ -98,14 +127,15 @@ def analyse_exam(source_id: int, on_progress=None) -> dict:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT s.pdf, s.subject_id, sub.name FROM sources s "
+                "SELECT s.pdf, s.subject_id, sub.name, s.type FROM sources s "
                 "JOIN subjects sub ON sub.id = s.subject_id WHERE s.id = %s",
                 (source_id,),
             )
             row = cur.fetchone()
     if row is None or row[0] is None:
-        raise ValueError("no PDF stored for this exam")
-    pdf, subject_id, subject_name = row
+        raise ValueError("no PDF stored for this file")
+    pdf, subject_id, subject_name, source_type = row
+    template = HOMEWORK_PROMPT if source_type == "homework" else PROMPT
 
     topics = subject_topics(subject_id)
     if not topics:
@@ -125,13 +155,13 @@ def analyse_exam(source_id: int, on_progress=None) -> dict:
 
         if math_char_count(page) < MIN_MATH_CHARS and len(text) >= MIN_TEXT_CHARS:
             read_as["text"] += 1
-            prompt = PROMPT.format(**details, how=", given as its extracted text",
-                                   page_text=f"\nPage text:\n{text}\n")
+            prompt = template.format(**details, how=", given as its extracted text",
+                                     page_text=f"\nPage text:\n{text}\n")
             # Generous budget: this model reasons before answering.
             answer = ask_model(TEXT_MODEL, prompt, label=f"exam {source_id}", max_tokens=8192)
         else:
             read_as["image"] += 1
-            prompt = PROMPT.format(**details, how="", page_text="")
+            prompt = template.format(**details, how="", page_text="")
             answer = ask_vision(prompt, page_image_url(page), label=f"exam {source_id}")
 
         if answer is None:
@@ -143,9 +173,10 @@ def analyse_exam(source_id: int, on_progress=None) -> dict:
             q["topic_ids"] = [t for t in dict.fromkeys(q["topic_ids"]) if t in known_ids]
             if q["continues"] and questions:
                 previous = questions[-1]
-                previous["text"] += "\n\n" + q["text"]
+                if q["text"]:
+                    previous["text"] += "\n\n" + q["text"]
                 previous["topic_ids"] = list(dict.fromkeys(previous["topic_ids"] + q["topic_ids"]))
-            else:
+            elif q["text"]:
                 q["page"] = index + 1
                 questions.append(q)
     doc.close()

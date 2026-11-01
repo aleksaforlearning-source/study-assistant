@@ -545,12 +545,14 @@
         <button class="tab" id="tab-blocks" role="tab" onclick="setView('blocks')">Blocks</button>
         <button class="tab" id="tab-focus" role="tab" onclick="setView('focus')">Focus</button>
         <button class="tab" id="tab-exams" role="tab" onclick="setView('exams')">Exams</button>
+        <button class="tab" id="tab-homework" role="tab" onclick="setView('homework')">Homework</button>
         <button class="ghost tabs-collapse" title="close every open topic" onclick="collapseAll()">collapse all</button>
       </div>
 
       <div id="blocks"></div>
       <div id="focus" hidden></div>
       <div id="exams" hidden></div>
+      <div id="homework" hidden></div>
       </div>
     </div>
   </div>
@@ -1918,7 +1920,12 @@ async function saveExam(value) {
 
 const VIEW_KEY = "study-assistant:view";
 // Each view has a tab tab-<view>, a container with id <view> and a loader.
-const VIEWS = { blocks: subjectId => loadBlocks(subjectId), focus: subjectId => loadFocus(subjectId), exams: subjectId => loadExams(subjectId) };
+const VIEWS = {
+  blocks: subjectId => loadBlocks(subjectId),
+  focus: subjectId => loadFocus(subjectId),
+  exams: subjectId => loadExams(subjectId),
+  homework: subjectId => loadHomework(subjectId),
+};
 let currentView = (() => {
   try {
     const saved = localStorage.getItem(VIEW_KEY);
@@ -1957,7 +1964,7 @@ function focusReasons(t) {
     t.tests ? `<span class="why why-exam">☆ ${count(t.tests, "test")}</span>` : "",
     t.unclear ? `<span class="why why-unclear">?${t.unclear} unclear</span>` : "",
     t.status === "review" ? `<span class="why why-review">review</span>` : "",
-    t.techniques ? `<span class="why why-technique">✎ ${count(t.techniques, "technique")}</span>` : "",
+    t.homework ? `<span class="why why-technique">✎ ${t.homework} homework</span>` : "",
     t.revisit ? `<span class="why why-revisit">${t.revisit} still shaky</span>` : "",
   ].join("");
 }
@@ -2036,7 +2043,7 @@ const shortBlockName = name => (name || "").split(":")[0];
 // Only the name shown in the app; ".pdf" is added back by the server.
 async function renameSource(sourceId) {
   const current = fileTitle(sourceNames[sourceId] || "");
-  const name = await askText("Rename exam", current);
+  const name = await askText("Rename file", current);
   if (!name || !name.trim() || name.trim() === current) return;
 
   const response = await fetch(`/sources/${sourceId}`, {
@@ -2058,11 +2065,7 @@ async function loadExams(subjectId) {
     fetch(`/subjects/${subjectId}/focus`).then(r => r.json()),
   ]);
 
-  // Focus already lists every topic grouped by block, which is what the picker needs.
-  examTopicOptions = focus.map(b => `
-    <optgroup label="${escapeHtml(b.name)}">
-      ${[...b.study, ...b.known].map(t => `<option value="${t.id}">${escapeHtml(t.title)}</option>`).join("")}
-    </optgroup>`).join("");
+  examTopicOptions = topicOptions(focus);
 
   const target = document.getElementById("exams");
   target.innerHTML = EXAM_SECTIONS.map(s => renderExamSection(s, exams.filter(e => e.kind === s.kind))).join("")
@@ -2071,6 +2074,74 @@ async function loadExams(subjectId) {
 
   // An analysis started before a reload keeps being watched.
   exams.filter(e => e.analysis?.status === "running").forEach(e => watchExamJob(e.analysis.job_id, e.source_id));
+}
+
+// Focus already lists every topic grouped by block, which is what the "+ link topic" picker needs.
+const topicOptions = focus => focus.map(b => `
+  <optgroup label="${escapeHtml(b.name)}">
+    ${[...b.study, ...b.known].map(t => `<option value="${t.id}">${escapeHtml(t.title)}</option>`).join("")}
+  </optgroup>`).join("");
+
+// ---- Homework view: homework belongs to blocks, so it is listed block by block ----
+// Files are uploaded here or in the block itself; analyse and topic links work as for exams.
+
+async function loadHomework(subjectId) {
+  const [blocks, focus] = await Promise.all([
+    fetch(`/subjects/${subjectId}/homework`).then(r => r.json()),
+    fetch(`/subjects/${subjectId}/focus`).then(r => r.json()),
+  ]);
+  examTopicOptions = topicOptions(focus);
+
+  const target = document.getElementById("homework");
+  if (!blocks.length) {
+    target.innerHTML = `<p class="empty">no blocks yet — homework goes into a block</p>`;
+    return;
+  }
+
+  target.innerHTML = blocks.map(b => `
+    <section class="exam-section">
+      <div class="exam-section-head">
+        <span class="exam-section-title">✎ ${escapeHtml(b.name)}</span>
+        <button class="ghost" onclick="revealField('hw-upload-${b.block_id}', 'hw-file-${b.block_id}')">+ upload</button>
+      </div>
+      <div class="upload" id="hw-upload-${b.block_id}" hidden>
+        <input type="file" id="hw-file-${b.block_id}" accept="application/pdf">
+        <button onclick="uploadHomework(${b.block_id})">upload</button>
+        ${iconButton("close", "close (esc)", `closeUpload('hw-upload-${b.block_id}')`, "cancel")}
+        <span class="progress" id="hw-progress-${b.block_id}"></span>
+      </div>
+      ${b.files.map(f => renderExamFile(f, "✎")).join("") || `<p class="empty exam-empty">no homework yet</p>`}
+    </section>`).join("");
+  renderMath(target);
+
+  // An analysis started before a reload keeps being watched.
+  blocks.flatMap(b => b.files).filter(f => f.analysis?.status === "running")
+    .forEach(f => watchExamJob(f.analysis.job_id, f.source_id));
+}
+
+// Stored in the block like a homework uploaded there.
+async function uploadHomework(blockId) {
+  const input = document.getElementById(`hw-file-${blockId}`);
+  const progress = document.getElementById(`hw-progress-${blockId}`);
+  if (!input.files.length) {
+    progress.textContent = "pick a file first";
+    return;
+  }
+
+  const form = new FormData();
+  form.append("file", input.files[0]);
+  form.append("source_type", "homework");
+  progress.className = "progress";
+  progress.textContent = "uploading...";
+
+  const response = await fetch(`/blocks/${blockId}/upload`, { method: "POST", body: form });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    progress.className = "progress failed";
+    progress.textContent = typeof error.detail === "string" ? error.detail : "upload failed";
+    return;
+  }
+  await loadHomework(document.getElementById("subject").value);
 }
 
 function renderExamSection({ kind, title, icon, empty }, exams) {
@@ -2114,8 +2185,8 @@ function renderExamFile(e, icon) {
       <span class="exam-icon">${icon}</span>
       <button class="exam-name" title="${escapeHtml(e.filename)}" onclick="openPdf(${e.source_id}, 1)">${escapeHtml(fileTitle(e.filename))}</button>
       <span class="exam-state" id="exam-state-${e.source_id}">${examStateHtml(e)}</span>
-      ${iconButton("rename", "rename exam", `renameSource(${e.source_id})`)}
-      ${iconButton("delete", "delete exam", `deleteSource(${e.source_id}, null)`, "danger")}
+      ${iconButton("rename", "rename", `renameSource(${e.source_id})`)}
+      ${iconButton("delete", "delete file", `deleteSource(${e.source_id}, null)`, "danger")}
     </div>
     <div class="exam-questions" id="exam-q-${e.source_id}" ${openExams.has(e.source_id) ? "" : "hidden"}>
       ${e.questions.map((q, i) => renderExamQuestion(e, q, i)).join("")
@@ -2136,7 +2207,7 @@ function renderExamQuestion(exam, q, index) {
   return `
     <div class="exam-q">
       <div class="exam-q-head">
-        <span class="exam-q-num">Q${escapeHtml(q.number ?? String(index + 1))}</span>
+        <span class="exam-q-num">${exam.kind === "homework" ? "T" : "Q"}${escapeHtml(q.number ?? String(index + 1))}</span>
         <div class="exam-q-text rich">${renderAnswer(q.text)}</div>
         ${q.page ? `<button class="icon-btn" title="original question in the PDF" onclick="openPdf(${exam.source_id}, ${q.page})">⎙</button>` : ""}
       </div>
@@ -2219,7 +2290,7 @@ async function uploadExam(kind) {
 }
 
 async function analyseExam(sourceId, again = false) {
-  if (again && !await askConfirm("Analyse this exam again?\n\nIts questions and topic links will be replaced. " +
+  if (again && !await askConfirm("Analyse this file again?\n\nIts questions and topic links will be replaced. " +
                                  "Topics you linked by hand are kept for questions with the same number.",
                                  { ok: "analyse again" })) return;
 
@@ -2250,8 +2321,10 @@ async function watchExamJob(jobId, sourceId) {
 
   examPollers.delete(jobId);
   openExams.add(sourceId);
-  if (currentView === "exams" && document.getElementById("subject").value === subjectId) {
-    await loadExams(subjectId);
+  // Exams and Homework both show analysed files; the one open is redrawn.
+  if ((currentView === "exams" || currentView === "homework")
+      && document.getElementById("subject").value === subjectId) {
+    await loadView(subjectId);
   }
 }
 
@@ -2285,12 +2358,12 @@ async function linkExamTopic(questionId, select) {
     const error = await response.json();
     showAlert(`failed: ${error.detail}`);
   }
-  await loadExams(document.getElementById("subject").value);
+  await loadView(document.getElementById("subject").value);
 }
 
 async function unlinkExamTopic(questionId, topicId) {
   await fetch(`/exam-questions/${questionId}/topics/${topicId}`, { method: "DELETE" });
-  await loadExams(document.getElementById("subject").value);
+  await loadView(document.getElementById("subject").value);
 }
 
 async function loadBlocks(subjectId) {
@@ -2416,7 +2489,9 @@ async function toggleBlock(blockId) {
   ]);
 
   // A lecture still processing after a page reload: keep showing its progress.
-  files.filter(f => f.job?.status === "running").forEach(f => watchJob(f.job.job_id, blockId));
+  // Homework jobs are analyses, watched on the Homework page, not lecture processing.
+  files.filter(f => f.job?.status === "running" && f.type !== "homework")
+    .forEach(f => watchJob(f.job.job_id, blockId));
   const upload = uploads[blockId];
 
   const row = (t, isChild, awayFrom) => `

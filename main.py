@@ -896,53 +896,87 @@ def list_exams(subject_id: int):
                  "analysis": None, "questions": []}
                 for r in cur.fetchall()
             ]
-            by_id = {e["source_id"]: e for e in exams}
-            ids = list(by_id)
-
-            # The latest job of each exam is its analysis state.
-            cur.execute(
-                "SELECT DISTINCT ON (source_id) source_id, id, stage, status, message "
-                "FROM jobs WHERE source_id = ANY(%s) ORDER BY source_id, id DESC",
-                (ids,),
-            )
-            for source_id, job_id, stage, status, message in cur.fetchall():
-                by_id[source_id]["analysis"] = {
-                    "job_id": job_id, "stage": stage, "status": status, "message": message,
-                }
-
-            cur.execute(
-                "SELECT id, source_id, number, text, page FROM exam_questions "
-                "WHERE source_id = ANY(%s) ORDER BY source_id, position",
-                (ids,),
-            )
-            questions = {}
-            for question_id, source_id, number, text, page in cur.fetchall():
-                questions[question_id] = q = {
-                    "question_id": question_id, "number": number, "text": text,
-                    "page": page, "topics": [],
-                }
-                by_id[source_id]["questions"].append(q)
-
-            # Each linked topic with the first block it appears in, for its panel and label.
-            cur.execute(
-                "SELECT qt.question_id, t.id, t.title, qt.origin, first_block.id, first_block.name "
-                "FROM exam_question_topics qt JOIN topics t ON t.id = qt.topic_id "
-                "LEFT JOIN LATERAL ("
-                "  SELECT b.id, b.name FROM topic_chunks tc "
-                "  JOIN chunks c ON c.id = tc.chunk_id JOIN sources s ON s.id = c.source_id "
-                "  JOIN blocks b ON b.id = s.block_id "
-                "  WHERE tc.topic_id = t.id ORDER BY b.position, b.id LIMIT 1"
-                ") first_block ON true "
-                "WHERE qt.question_id = ANY(%s) ORDER BY qt.question_id, t.title",
-                (list(questions),),
-            )
-            for question_id, topic_id, title, origin, block_id, block_name in cur.fetchall():
-                questions[question_id]["topics"].append({
-                    "topic_id": topic_id, "title": title, "origin": origin,
-                    "block_id": block_id, "block_name": block_name,
-                })
+            add_questions(cur, exams)
 
     return exams
+
+
+@app.get("/subjects/{subject_id}/homework")
+def list_homework(subject_id: int):
+    """Every block of the subject in order, with its homework files analysed like exams."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name FROM blocks WHERE subject_id = %s ORDER BY position, id",
+                (subject_id,),
+            )
+            blocks = [{"block_id": r[0], "name": r[1], "files": []} for r in cur.fetchall()]
+            by_block = {b["block_id"]: b for b in blocks}
+
+            cur.execute(
+                "SELECT id, filename, block_id FROM sources "
+                "WHERE subject_id = %s AND type = 'homework' AND block_id IS NOT NULL ORDER BY id",
+                (subject_id,),
+            )
+            files = []
+            for source_id, filename, block_id in cur.fetchall():
+                file = {"source_id": source_id, "filename": filename, "kind": "homework",
+                        "analysis": None, "questions": []}
+                by_block[block_id]["files"].append(file)
+                files.append(file)
+            add_questions(cur, files)
+
+    return blocks
+
+
+def add_questions(cur, files: list[dict]) -> None:
+    """Fills in each analysed file's analysis state and its questions with their topics."""
+    by_id = {f["source_id"]: f for f in files}
+    ids = list(by_id)
+
+    # The latest job of each file is its analysis state.
+    cur.execute(
+        "SELECT DISTINCT ON (source_id) source_id, id, stage, status, message "
+        "FROM jobs WHERE source_id = ANY(%s) ORDER BY source_id, id DESC",
+        (ids,),
+    )
+    for source_id, job_id, stage, status, message in cur.fetchall():
+        by_id[source_id]["analysis"] = {
+            "job_id": job_id, "stage": stage, "status": status, "message": message,
+        }
+
+    cur.execute(
+        "SELECT id, source_id, number, text, page FROM exam_questions "
+        "WHERE source_id = ANY(%s) ORDER BY source_id, position",
+        (ids,),
+    )
+    questions = {}
+    for question_id, source_id, number, text, page in cur.fetchall():
+        questions[question_id] = q = {
+            "question_id": question_id, "number": number, "text": text,
+            "page": page, "topics": [],
+        }
+        by_id[source_id]["questions"].append(q)
+
+    # Each linked topic with the first block it appears in, for its panel and label.
+    cur.execute(
+        "SELECT qt.question_id, t.id, t.title, qt.origin, first_block.id, first_block.name "
+        "FROM exam_question_topics qt JOIN topics t ON t.id = qt.topic_id "
+        "LEFT JOIN LATERAL ("
+        "  SELECT b.id, b.name FROM topic_chunks tc "
+        "  JOIN chunks c ON c.id = tc.chunk_id JOIN sources s ON s.id = c.source_id "
+        "  JOIN blocks b ON b.id = s.block_id "
+        "  WHERE tc.topic_id = t.id ORDER BY b.position, b.id LIMIT 1"
+        ") first_block ON true "
+        "WHERE qt.question_id = ANY(%s) ORDER BY qt.question_id, t.title",
+        (list(questions),),
+    )
+    for question_id, topic_id, title, origin, block_id, block_name in cur.fetchall():
+        questions[question_id]["topics"].append({
+            "topic_id": topic_id, "title": title, "origin": origin,
+            "block_id": block_id, "block_name": block_name,
+        })
+
 
 
 @app.post("/sources/{source_id}/analyse")
@@ -953,12 +987,12 @@ def start_exam_analysis(source_id: int, background_tasks: BackgroundTasks):
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail=f"source {source_id} not found")
-            if row[0] not in EXAM_KINDS:
-                raise HTTPException(status_code=400, detail="only exams can be analysed for now")
+            if row[0] not in EXAM_KINDS and row[0] != SourceType.homework.value:
+                raise HTTPException(status_code=400, detail="only exams and homework can be analysed")
 
             cur.execute("SELECT 1 FROM jobs WHERE source_id = %s AND status = 'running'", (source_id,))
             if cur.fetchone():
-                raise HTTPException(status_code=409, detail="this exam is already being analysed")
+                raise HTTPException(status_code=409, detail="this file is already being analysed")
 
             cur.execute("INSERT INTO jobs (source_id) VALUES (%s) RETURNING id", (source_id,))
             job_id = cur.fetchone()[0]
@@ -1009,7 +1043,7 @@ PRIORITY_WEIGHTS = {
     "tests": 2.0,       # per short test question on the topic
     "unclear": 2.0,     # per open unclear place
     "review": 2.0,      # status "review"
-    "techniques": 1.0,  # per homework technique
+    "homework": 1.0,    # per homework task on the topic
     "revisit": 1.0,     # per note marked "come back to this": understood, but needs another look
     "weight": 1.0,      # share of the lecture, scaled to 0..1 within the subject
 }
@@ -1031,7 +1065,8 @@ def subject_focus(subject_id: int):
                 " JOIN sources es ON es.id = q.source_id WHERE qt.topic_id = t.id AND es.type = 'past_exam'), "
                 "(SELECT count(*) FROM exam_question_topics qt JOIN exam_questions q ON q.id = qt.question_id "
                 " JOIN sources es ON es.id = q.source_id WHERE qt.topic_id = t.id AND es.type = 'short_exam'), "
-                "(SELECT count(*) FROM techniques te WHERE te.topic_id = t.id), "
+                "(SELECT count(*) FROM exam_question_topics qt JOIN exam_questions q ON q.id = qt.question_id "
+                " JOIN sources es ON es.id = q.source_id WHERE qt.topic_id = t.id AND es.type = 'homework'), "
                 "(SELECT count(*) FROM notes n WHERE n.topic_id = t.id AND n.revisit) "
                 "FROM topics t "
                 "JOIN topic_chunks tc ON tc.topic_id = t.id "
@@ -1047,12 +1082,12 @@ def subject_focus(subject_id: int):
     # One row per (topic, block): keep the earliest block, add up the weight.
     topics = {}
     for (topic_id, title, status, block_id, block_name, position,
-         weight, first_page, unclear, finals, tests, techniques, revisit) in rows:
+         weight, first_page, unclear, finals, tests, homework, revisit) in rows:
         topic = topics.get(topic_id)
         if topic is None:
             topics[topic_id] = topic = {
                 "id": topic_id, "title": title, "status": status, "weight": 0,
-                "unclear": unclear, "finals": finals, "tests": tests, "techniques": techniques,
+                "unclear": unclear, "finals": finals, "tests": tests, "homework": homework,
                 "revisit": revisit,
                 "block": (position, block_id, block_name), "first_page": first_page,
             }
@@ -1068,7 +1103,7 @@ def subject_focus(subject_id: int):
             + PRIORITY_WEIGHTS["tests"] * t["tests"]
             + PRIORITY_WEIGHTS["unclear"] * t["unclear"]
             + PRIORITY_WEIGHTS["review"] * (t["status"] == "review")
-            + PRIORITY_WEIGHTS["techniques"] * t["techniques"]
+            + PRIORITY_WEIGHTS["homework"] * t["homework"]
             + PRIORITY_WEIGHTS["revisit"] * t["revisit"]
             + PRIORITY_WEIGHTS["weight"] * t["weight"] / max_weight,
             2,
