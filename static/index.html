@@ -109,7 +109,9 @@
   .back-link:hover { color: var(--text); }
 
   /* subjects page: one card per subject, the nearest exam first */
-  .home-head { margin: 8px 0 16px; }
+  /* .toolbar comes later and would set the bottom margin to 2px: the hover of the
+     semester picker then touched the first card */
+  .toolbar.home-head { margin: 8px 0 22px; }
   .subject-card { display: flex; align-items: center; gap: 16px; width: 100%; margin-bottom: 10px;
                   padding: 16px 18px; text-align: left; border: 1px solid var(--border);
                   border-radius: 12px; background: var(--surface); cursor: pointer; }
