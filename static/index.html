@@ -2640,9 +2640,9 @@ function restoreScroll() {
   document.querySelector(".main").scrollTop = loadState(SCROLL_KEY, 0);
 }
 
-// Shown only while the background worker still has formula pages of this block to re-read.
+// Shown only while the background worker still has pages of this block to re-read (formulas, pictures).
 const formulaLabel = b =>
-  b.formulas && b.formulas.done < b.formulas.pages ? ` · formulas ${b.formulas.done}/${b.formulas.pages}` : "";
+  b.formulas && b.formulas.done < b.formulas.pages ? ` · reading slides ${b.formulas.done}/${b.formulas.pages}` : "";
 
 let formulaTimer = null;
 

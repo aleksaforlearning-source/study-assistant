@@ -1,11 +1,13 @@
-"""Re-reads slides with formulas from the page image, in the background.
+"""Re-reads slides from the page image, in the background: formulas and pictures.
 
 PDF text extraction breaks math: ∀ comes out as ’, ε as Á, fractions lose
-their bar, ≠ loses its stroke. On upload a lecture is read from the text layer
-as before; pages that use math fonts are only marked as pending. A single
-worker thread then sends those pages as images to a vision model and replaces
-their text with the Markdown + LaTeX transcription, as fast as the Groq limits
-allow. The queue lives in the chunks table, so it survives restarts.
+their bar, ≠ loses its stroke. And it does not see pictures at all: a tree or
+a graph drawn on a slide leaves at most its labels. On upload a lecture is read
+from the text layer as before; pages that use math fonts and weak pages (mostly
+a picture, see pdf_parser) are only marked as pending. A single worker thread
+then sends those pages as images to a vision model and replaces their text with
+a Markdown + LaTeX transcription that also describes the pictures, as fast as
+the Groq limits allow. The queue lives in the chunks table, so it survives restarts.
 """
 
 import base64
@@ -39,6 +41,10 @@ PROMPT = r"""Transcribe this lecture slide into Markdown.
 - Write every formula and every math symbol as LaTeX: inline \( ... \), display $$ ... $$
 - Use real subscripts, superscripts, fractions: \(x_0\), \(\mathbb{R}^d\), \(\frac{f}{g}\)
 - Keep headings as Markdown headings and lists as lists
+- For every diagram, tree, graph, chart, table drawn as a picture or photo, add
+  a line "[figure: ...]" that says what it shows so it can be understood without
+  seeing it: the kind of figure, its structure (e.g. which node is the child of
+  which, which vertices are connected, the axes and the curve's shape), labels and values
 - Skip the footer (course name, chapter, page number) and logos
 - Output only the transcription"""
 
@@ -53,8 +59,9 @@ def math_char_count(page: pymupdf.Page) -> int:
     return count
 
 
-def enqueue_math_pages(source_id: int) -> int:
-    """Marks the pages of a source that use math fonts as pending. Returns how many."""
+def enqueue_vision_pages(source_id: int) -> int:
+    """Marks the pages of a source that use math fonts or are mostly a picture
+    as pending. Returns how many."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT pdf FROM sources WHERE id = %s", (source_id,))
@@ -63,7 +70,7 @@ def enqueue_math_pages(source_id: int) -> int:
                 return 0
 
             cur.execute(
-                "SELECT id, page_number FROM chunks "
+                "SELECT id, page_number, is_weak FROM chunks "
                 "WHERE source_id = %s AND formula_status IS NULL",
                 (source_id,),
             )
@@ -71,8 +78,8 @@ def enqueue_math_pages(source_id: int) -> int:
 
             doc = pymupdf.open(stream=row[0], filetype="pdf")
             pending = [
-                chunk_id for chunk_id, page_number in chunks
-                if math_char_count(doc[page_number - 1]) >= MIN_MATH_CHARS
+                chunk_id for chunk_id, page_number, is_weak in chunks
+                if is_weak or math_char_count(doc[page_number - 1]) >= MIN_MATH_CHARS
             ]
             doc.close()
 
@@ -148,7 +155,7 @@ def ask_model(model: str, content, label: str, max_tokens: int = 4096) -> str | 
 
 
 def transcribe_page(page: pymupdf.Page) -> str | None:
-    text = ask_vision(PROMPT, page_image_url(page), label="formulas")
+    text = ask_vision(PROMPT, page_image_url(page), label="slides")
     # "or None": a transcription that is empty after cleaning must not replace the text
     return (clean_transcription(text) or None) if text else None
 
@@ -182,14 +189,35 @@ def process_page(chunk_id: int, source_id: int, page_number: int) -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
             # pdf_text keeps the original once; dropping the vector makes embed_source redo it.
+            # Read from the image, a weak page is a full page now.
             cur.execute(
                 "UPDATE chunks SET pdf_text = COALESCE(pdf_text, text), text = %s, "
-                "embedding = NULL, formula_status = 'done' WHERE id = %s",
+                "embedding = NULL, formula_status = 'done', is_weak = false WHERE id = %s",
                 (text, chunk_id),
             )
+            link_to_nearest_topics(cur, chunk_id, source_id, page_number)
 
     embed_source(source_id)
-    print(f"formulas: source {source_id} page {page_number} done")
+    print(f"slides: source {source_id} page {page_number} done")
+
+
+def link_to_nearest_topics(cur, chunk_id: int, source_id: int, page_number: int) -> None:
+    """A weak page was skipped when the lecture's topics were found, so no topic
+    has it. It gets the topics of the nearest page that has some (the earlier
+    one on a tie): a picture shows what the slides around it are about."""
+    cur.execute("SELECT 1 FROM topic_chunks WHERE chunk_id = %s", (chunk_id,))
+    if cur.fetchone():
+        return
+    cur.execute(
+        "INSERT INTO topic_chunks (topic_id, chunk_id) "
+        "SELECT DISTINCT tc.topic_id, %s FROM topic_chunks tc JOIN chunks c ON c.id = tc.chunk_id "
+        "WHERE c.source_id = %s AND c.page_number = ("
+        "  SELECT c2.page_number FROM chunks c2 JOIN topic_chunks tc2 ON tc2.chunk_id = c2.id "
+        "  WHERE c2.source_id = %s AND c2.id <> %s "
+        "  ORDER BY abs(c2.page_number - %s), c2.page_number LIMIT 1"
+        ") ON CONFLICT DO NOTHING",
+        (chunk_id, source_id, source_id, chunk_id, page_number),
+    )
 
 
 def mark_failed(chunk_id: int) -> None:
@@ -209,7 +237,7 @@ def worker() -> None:
             process_page(*job)
         except Exception as error:
             # Mark the page so one broken page does not block the whole queue.
-            print(f"formulas: worker error: {error}")
+            print(f"slides: worker error: {error}")
             if job is not None:
                 mark_failed(job[0])
             time.sleep(IDLE_SECONDS)

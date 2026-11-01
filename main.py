@@ -25,7 +25,7 @@ from pipeline import fail_interrupted_jobs, run_pipeline
 
 from summarizer import EmptySummaryError, summarize_topic
 from exam_analyzer import run_exam_analysis
-from math_pages import enqueue_math_pages, start_worker
+from math_pages import enqueue_vision_pages, start_worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1570,9 +1570,9 @@ def upload_to_block(
     if job_id is not None:
         background_tasks.add_task(run_pipeline, job_id, source_id, subject_id, block_id)
     elif source_type != SourceType.my_solution:
-        # Fix formulas now, so a later analyse reads clean text. Own solutions are
-        # never analysed by default, so they cost no vision tokens.
-        background_tasks.add_task(enqueue_math_pages, source_id)
+        # Fix formulas and describe pictures now, so a later analyse reads clean text.
+        # Own solutions are never analysed by default, so they cost no vision tokens.
+        background_tasks.add_task(enqueue_vision_pages, source_id)
 
     return {
         "job_id": job_id,

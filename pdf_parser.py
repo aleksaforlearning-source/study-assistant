@@ -42,20 +42,24 @@ def parse_pdf(file_bytes: bytes) -> list[dict]:
 
     for index, raw in enumerate(raw_texts):
         text = strip_boilerplate(raw, boilerplate)
-        if not text:
+        page = doc[index]
+        drawings = len(page.get_drawings())
+        has_picture = PICTURE_MARKER in text
+
+        # A page that is only a picture or a diagram is kept with no text: the
+        # vision worker describes it later. A page with nothing on it is skipped.
+        # (Images count only here: a logo on every slide must not make short slides weak.)
+        if not text and not page.get_images() and drawings < DRAWINGS_THRESHOLD:
             continue
 
-        if previous_text:
+        if previous_text and text:
             ratio = difflib.SequenceMatcher(None, previous_text, text).ratio()
             if ratio > DUPLICATE_RATIO:
                 previous_text = text
                 continue
 
-        page = doc[index]
-        drawings = len(page.get_drawings())
-        has_picture = PICTURE_MARKER in text
-
-        is_weak = len(text) < MIN_TEXT_LENGTH and (
+        # Weak: mostly a picture, so the text layer says little. These go to the vision worker.
+        is_weak = not text or len(text) < MIN_TEXT_LENGTH and (
             drawings >= DRAWINGS_THRESHOLD or has_picture
         )
 
