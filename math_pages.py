@@ -220,6 +220,30 @@ def link_to_nearest_topics(cur, chunk_id: int, source_id: int, page_number: int)
     )
 
 
+def read_picture_pages_now(source_id: int, on_progress=None) -> bool:
+    """For a file that is mostly photos or scans: its weak pages are read right
+    away, before the topics are found, since without them there is nothing to
+    find topics in. Returns False, and reads nothing, for an ordinary PDF: there
+    the queue describes the pictures in the background."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, page_number, is_weak FROM chunks "
+                "WHERE source_id = %s AND formula_status IS NULL ORDER BY page_number",
+                (source_id,),
+            )
+            chunks = cur.fetchall()
+    weak = [(chunk_id, page) for chunk_id, page, is_weak in chunks if is_weak]
+    if not chunks or len(weak) * 2 < len(chunks):
+        return False
+
+    for done, (chunk_id, page_number) in enumerate(weak):
+        if on_progress:
+            on_progress(done, len(weak))
+        process_page(chunk_id, source_id, page_number)
+    return True
+
+
 def mark_failed(chunk_id: int) -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:

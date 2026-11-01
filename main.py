@@ -13,7 +13,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from pydantic import BaseModel
 
 from db import get_connection
-from pdf_parser import parse_pdf
+from pdf_parser import files_to_pdf, parse_pdf
 from topic_extractor import extract_topics
 from build_hierarchy import build_hierarchy
 
@@ -958,12 +958,17 @@ class QuestionTopicIn(BaseModel):
     topic_id: int
 
 
-@app.post("/subjects/{subject_id}/exams")
-def upload_exam(subject_id: int, kind: ExamKind = Form(...), file: UploadFile = File(...)):
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=415, detail=f"only PDF for now, got {file.content_type}")
+def read_upload(files: list[UploadFile]) -> tuple[bytes, str]:
+    """The uploaded PDF, or the photos (and PDFs) put together into one PDF, with its name."""
+    try:
+        return files_to_pdf([(f.filename, f.content_type, f.file.read()) for f in files])
+    except ValueError as error:
+        raise HTTPException(status_code=415, detail=str(error))
 
-    data = file.file.read()
+
+@app.post("/subjects/{subject_id}/exams")
+def upload_exam(subject_id: int, kind: ExamKind = Form(...), file: list[UploadFile] = File(...)):
+    data, filename = read_upload(file)
     content_hash = hashlib.sha256(data).hexdigest()
 
     with get_connection() as conn:
@@ -984,11 +989,11 @@ def upload_exam(subject_id: int, kind: ExamKind = Form(...), file: UploadFile = 
             cur.execute(
                 "INSERT INTO sources (subject_id, type, filename, content_hash, pdf) "
                 "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (subject_id, EXAM_TYPES[kind].value, file.filename, content_hash, data),
+                (subject_id, EXAM_TYPES[kind].value, filename, content_hash, data),
             )
             source_id = cur.fetchone()[0]
 
-    return {"source_id": source_id, "filename": file.filename, "kind": kind.value}
+    return {"source_id": source_id, "filename": filename, "kind": kind.value}
 
 
 @app.get("/subjects/{subject_id}/exams")
@@ -1511,15 +1516,9 @@ def upload_to_block(
     block_id: int,
     background_tasks: BackgroundTasks,
     source_type: SourceType = Form(...),
-    file: UploadFile = File(...),
+    file: list[UploadFile] = File(...),
 ):
-    if file.content_type != "application/pdf":
-        raise HTTPException(
-            status_code=415,
-            detail=f"only PDF for now, got {file.content_type}",
-        )
-
-    data = file.file.read()
+    data, filename = read_upload(file)
     content_hash = hashlib.sha256(data).hexdigest()
 
     with get_connection() as conn:
@@ -1546,7 +1545,7 @@ def upload_to_block(
             cur.execute(
                 "INSERT INTO sources (subject_id, block_id, type, filename, content_hash, pdf) "
                 "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (subject_id, block_id, source_type.value, file.filename, content_hash, data),
+                (subject_id, block_id, source_type.value, filename, content_hash, data),
             )
             source_id = cur.fetchone()[0]
 
@@ -1577,7 +1576,7 @@ def upload_to_block(
     return {
         "job_id": job_id,
         "source_id": source_id,
-        "filename": file.filename,
+        "filename": filename,
         "chunks": len(chunks),
         "weak_chunks": sum(1 for c in chunks if c["is_weak"]),
     }

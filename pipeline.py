@@ -6,7 +6,7 @@ from db import get_connection
 from topic_extractor import extract_topics
 from build_hierarchy import build_hierarchy
 from embedder import embed_source
-from math_pages import enqueue_vision_pages
+from math_pages import enqueue_vision_pages, read_picture_pages_now
 
 
 def set_stage(job_id: int, stage: str) -> None:
@@ -62,6 +62,12 @@ def run_pipeline(job_id: int, source_id: int, subject_id: int, block_id: int) ->
 
 def _run_pipeline(job_id: int, source_id: int, subject_id: int, block_id: int) -> None:
     try:
+        # Photos or a scan: read from the images first (a no-op for an ordinary PDF).
+        read_picture_pages_now(
+            source_id,
+            on_progress=lambda done, total: set_stage(job_id, f"reading photos {done + 1}/{total}"),
+        )
+
         set_stage(job_id, "topics")
         extract_topics(source_id)
 

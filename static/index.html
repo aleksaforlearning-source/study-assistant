@@ -2213,6 +2213,10 @@ const examPollers = new Set();   // job ids already being watched
 let examTopicOptions = "";       // <optgroup>s for the "+ link topic" picker
 
 const fileTitle = filename => filename.replace(/\.pdf$/i, "");
+
+// Every upload takes a PDF or photos; several photos become one PDF, in the order picked.
+const UPLOAD_ACCEPT = "application/pdf,image/png,image/jpeg,image/webp";
+const UPLOAD_HINT = "a PDF, or photos (PNG, JPEG) — several photos become one file";
 // "Chapter 8: Multivariate calculus" → "Chapter 8"
 const shortBlockName = name => (name || "").split(":")[0];
 
@@ -2306,7 +2310,7 @@ async function loadHomework(subjectId) {
     `✎ ${escapeHtml(b.name)}`,
     `<button class="ghost" onclick="revealField('hw-upload-${b.block_id}', 'hw-file-${b.block_id}')">+ upload</button>`,
     `<div class="upload" id="hw-upload-${b.block_id}" hidden>
-       <input type="file" id="hw-file-${b.block_id}" accept="application/pdf">
+       <input type="file" id="hw-file-${b.block_id}" accept="${UPLOAD_ACCEPT}" multiple title="${UPLOAD_HINT}">
        <button onclick="uploadHomework(${b.block_id})">upload</button>
        ${iconButton("close", "close (esc)", `closeUpload('hw-upload-${b.block_id}')`, "cancel")}
        <span class="progress" id="hw-progress-${b.block_id}"></span>
@@ -2330,7 +2334,7 @@ async function uploadHomework(blockId) {
   }
 
   const form = new FormData();
-  form.append("file", input.files[0]);
+  [...input.files].forEach(file => form.append("file", file));
   form.append("source_type", "homework");
   progress.className = "progress";
   progress.textContent = "uploading...";
@@ -2351,7 +2355,7 @@ function renderExamSection({ kind, title, icon, empty }, exams) {
     `${icon} ${title}`,
     `<button class="ghost" onclick="revealField('exam-upload-${kind}', 'exam-file-${kind}')">+ upload</button>`,
     `<div class="upload" id="exam-upload-${kind}" hidden>
-       <input type="file" id="exam-file-${kind}" accept="application/pdf">
+       <input type="file" id="exam-file-${kind}" accept="${UPLOAD_ACCEPT}" multiple title="${UPLOAD_HINT}">
        <button onclick="uploadExam('${kind}')">upload</button>
        ${iconButton("close", "close (esc)", `closeUpload('exam-upload-${kind}')`, "cancel")}
        <span class="progress" id="exam-progress-${kind}"></span>
@@ -2469,7 +2473,7 @@ async function uploadExam(kind) {
   }
 
   const form = new FormData();
-  form.append("file", input.files[0]);
+  [...input.files].forEach(file => form.append("file", file));
   form.append("kind", kind);
   progress.className = "progress";
   progress.textContent = "uploading...";
@@ -2711,7 +2715,7 @@ async function toggleBlock(blockId) {
   // and while an upload of this block is in progress.
   const uploadRow = `
     <div class="upload" id="upload-${blockId}" ${files.length && !upload ? "hidden" : ""}>
-      <input type="file" id="file-${blockId}" accept="application/pdf">
+      <input type="file" id="file-${blockId}" accept="${UPLOAD_ACCEPT}" multiple title="${UPLOAD_HINT}">
       <select id="type-${blockId}">
         <option value="lecture">lecture</option>
         <option value="homework">homework</option>
@@ -3148,7 +3152,7 @@ async function uploadFile(blockId) {
   }
 
   const form = new FormData();
-  form.append("file", input.files[0]);
+  [...input.files].forEach(file => form.append("file", file));
   form.append("source_type", type);
   input.value = "";
   setUploadStatus(blockId, "uploading...");

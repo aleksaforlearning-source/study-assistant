@@ -1,15 +1,60 @@
 import difflib
+import io
 import tempfile
 from collections import Counter
+from pathlib import Path
 
 import pymupdf
 import pymupdf4llm
+from PIL import Image, ImageOps
 
 MIN_TEXT_LENGTH = 300
 DRAWINGS_THRESHOLD = 30
 DUPLICATE_RATIO = 0.9
 BOILERPLATE_THRESHOLD = 0.6
 PICTURE_MARKER = "<!-- Start of picture text -->"
+
+
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+# A phone photo is 4000px and more; this is plenty to read and keeps the PDF small.
+MAX_IMAGE_SIDE = 2000
+PAGE_WIDTH = 595  # A4 width in points; the height follows the image
+
+
+def image_page(doc: pymupdf.Document, data: bytes) -> None:
+    """Adds one image to the PDF as a page of its own."""
+    image = Image.open(io.BytesIO(data))
+    # Phones store a photo sideways with a note to rotate it; apply that note.
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=85)
+
+    width, height = image.size
+    page = doc.new_page(width=PAGE_WIDTH, height=PAGE_WIDTH * height / width)
+    page.insert_image(page.rect, stream=buffer.getvalue())
+
+
+def files_to_pdf(files: list[tuple[str, str, bytes]]) -> tuple[bytes, str]:
+    """(filename, content type, bytes) of the uploaded files → one PDF and its name.
+
+    A single PDF stays as it is. Images (photos of a homework, a scan of an exam)
+    become pages, in the order given; PDFs among them are put in whole."""
+    if len(files) == 1 and files[0][1] == "application/pdf":
+        return files[0][2], files[0][0]
+
+    doc = pymupdf.open()
+    for filename, content_type, data in files:
+        if content_type in IMAGE_TYPES:
+            image_page(doc, data)
+        elif content_type == "application/pdf":
+            with pymupdf.open(stream=data, filetype="pdf") as part:
+                doc.insert_pdf(part)
+        else:
+            raise ValueError(f"only PDF and images (PNG, JPEG, WebP), got {content_type} for {filename}")
+    data = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return data, Path(files[0][0]).stem + ".pdf"
 
 
 def find_boilerplate(texts: list[str]) -> set[str]:
