@@ -2185,23 +2185,27 @@ async function toggleTopicQuestions(topicId, kind, chip) {
   slot.className = "focus-questions";
   slot.id = `fq-${topicId}`;
   slot.dataset.kind = kind;
-  slot.innerHTML = questions.map(q => {
-    sourceNames[q.source_id] = q.filename;
-    return `
-      <div class="fq">
-        <div class="fq-head">
-          <span class="why ${kind === "homework" ? "why-technique" : "why-exam"}">${QUESTION_LABELS[kind]}</span>
-          <span>${escapeHtml(fileTitle(q.filename))} · ${kind === "homework" ? "T" : "Q"}${escapeHtml(q.number ?? "?")}</span>
-          ${q.page ? `<button class="icon-btn" title="the original page in the PDF" onclick="openPdf(${q.source_id}, ${q.page})">⎙</button>` : ""}
-        </div>
-        <div class="rich fq-text">${renderAnswer(q.text)}</div>
-      </div>`;
-  }).join("") || `<p class="empty">nothing linked any more</p>`;
+  slot.innerHTML = questions.map(questionCard).join("") || `<p class="empty">nothing linked any more</p>`;
 
   // After the topic's panel when it is open, so a click on the title still closes the panel.
   const panel = document.getElementById(`panel-${topicId}`);
   (panel?.previousElementSibling === row ? panel : row).insertAdjacentElement("afterend", slot);
   renderMath(slot);
+}
+
+// One exam question or homework task as analyse wrote it: { kind, source_id,
+// filename, number, page, text }. The PDF page is only a small button aside.
+function questionCard(q) {
+  sourceNames[q.source_id] = q.filename;
+  return `
+    <div class="fq">
+      <div class="fq-head">
+        <span class="why ${q.kind === "homework" ? "why-technique" : "why-exam"}">${QUESTION_LABELS[q.kind]}</span>
+        <span>${escapeHtml(fileTitle(q.filename))} · ${q.kind === "homework" ? "T" : "Q"}${escapeHtml(q.number ?? "?")}</span>
+        ${q.page ? `<button class="icon-btn" title="the original page in the PDF" onclick="openPdf(${q.source_id}, ${q.page})">⎙</button>` : ""}
+      </div>
+      <div class="rich fq-text">${renderAnswer(q.text)}</div>
+    </div>`;
 }
 
 // Blocks folded in Focus; they all start unfolded and a fold is remembered.
@@ -2437,19 +2441,23 @@ function examStateHtml(e) {
   }
   if (a?.status === "done") {
     const open = openExams.has(e.source_id);
-    return `<button class="ghost exam-small exam-count" onclick="toggleExam(${e.source_id}, this)">✦ ${count(e.questions.length, "question")} ${open ? "▾" : "▸"}</button>
+    return `<button class="ghost exam-small exam-count" onclick="toggleExam(${e.source_id})">✦ ${count(e.questions.length, "question")} ${open ? "▾" : "▸"}</button>
             ${iconButton("regenerate", "analyse again", `analyseExam(${e.source_id}, true)`)}`;
   }
   return `<button class="magic exam-small" onclick="analyseExam(${e.source_id})">analyse</button>`;
 }
 
+// The name unfolds the analysed questions; the PDF is the ⎙ button (and the name before analysis).
 function renderExamFile(e, icon) {
   sourceNames[e.source_id] = e.filename;
+  const analysed = e.analysis?.status === "done";
   return `
     <div class="exam-file">
       <span class="exam-icon">${icon}</span>
-      <button class="exam-name" title="${escapeHtml(e.filename)}" onclick="openPdf(${e.source_id}, 1)">${escapeHtml(fileTitle(e.filename))}</button>
+      <button class="exam-name" title="${escapeHtml(e.filename)}"
+              onclick="${analysed ? `toggleExam(${e.source_id})` : `openPdf(${e.source_id}, 1)`}">${escapeHtml(fileTitle(e.filename))}</button>
       <span class="exam-state" id="exam-state-${e.source_id}">${examStateHtml(e)}</span>
+      <button class="icon-btn" title="open the PDF" aria-label="open the PDF" onclick="openPdf(${e.source_id}, 1)">⎙</button>
       ${iconButton("rename", "rename", `renameSource(${e.source_id})`)}
       ${iconButton("delete", "delete file", `deleteSource(${e.source_id}, null)`, "danger")}
     </div>
@@ -2486,43 +2494,69 @@ function renderExamQuestion(exam, q, index) {
     </div>`;
 }
 
+// The questions behind the "Most asked" rows, by question id, for showing them under a row.
+const mostAskedQuestions = new Map();
+
 // Topics counted over all analysed questions, final exam weighted like in Focus.
 function renderMostAsked(exams) {
   const stats = new Map();
+  mostAskedQuestions.clear();
   for (const e of exams) {
     for (const q of e.questions) {
+      mostAskedQuestions.set(q.question_id, { ...q, kind: e.kind, source_id: e.source_id, filename: e.filename });
       for (const t of q.topics) {
-        const s = stats.get(t.topic_id) ?? { title: t.title, finals: 0, tests: 0, refs: [] };
+        const s = stats.get(t.topic_id) ?? { id: t.topic_id, title: t.title, finals: 0, tests: 0, refs: [] };
         s[e.kind === "final" ? "finals" : "tests"] += 1;
-        s.refs.push({ sourceId: e.source_id, page: q.page || 1, label: `${fileTitle(e.filename)} Q${q.number ?? "?"}` });
+        s.refs.push({ questionId: q.question_id, label: `${fileTitle(e.filename)} Q${q.number ?? "?"}` });
         stats.set(t.topic_id, s);
       }
     }
   }
   if (!stats.size) return "";
 
+  // The counts show all of a topic's questions, a reference just that one.
   const rows = [...stats.values()]
     .sort((a, b) => (b.finals * 3 + b.tests * 2) - (a.finals * 3 + a.tests * 2))
     .slice(0, 15)
-    .map(s => `
-      <div class="most-row">
+    .map(s => {
+      const all = s.refs.map(r => r.questionId).join(",");
+      return `
+      <div class="most-row" id="most-${s.id}">
         <span class="most-title">${escapeHtml(s.title)}</span>
         <span class="most-counts">
-          ${s.finals ? `<span class="why why-exam">★ ${s.finals} final</span>` : ""}
-          ${s.tests ? `<span class="why why-exam">☆ ${count(s.tests, "test")}</span>` : ""}
+          ${s.finals ? `<button class="why why-exam" onclick="toggleMostAsked(${s.id}, '${all}')">★ ${s.finals} final</button>` : ""}
+          ${s.tests ? `<button class="why why-exam" onclick="toggleMostAsked(${s.id}, '${all}')">☆ ${count(s.tests, "test")}</button>` : ""}
         </span>
         <span class="most-refs">${s.refs.map(r =>
-          `<button class="most-ref" onclick="openPdf(${r.sourceId}, ${r.page})">${escapeHtml(r.label)}</button>`).join("")}</span>
-      </div>`).join("");
+          `<button class="most-ref" onclick="toggleMostAsked(${s.id}, '${r.questionId}')">${escapeHtml(r.label)}</button>`).join("")}</span>
+      </div>`;
+    }).join("");
 
   return foldableSection("most-asked", "Most asked", "", rows);
 }
 
-function toggleExam(sourceId, button) {
+// Shows the given questions (ids joined by commas) under the topic's row; the same click again closes them.
+function toggleMostAsked(topicId, ids) {
+  const existing = document.getElementById(`ma-${topicId}`);
+  existing?.remove();
+  if (existing?.dataset.ids === ids) return;
+
+  const slot = document.createElement("div");
+  slot.className = "focus-questions";
+  slot.id = `ma-${topicId}`;
+  slot.dataset.ids = ids;
+  slot.innerHTML = ids.split(",").map(id => mostAskedQuestions.get(Number(id))).filter(Boolean)
+    .map(questionCard).join("");
+  document.getElementById(`most-${topicId}`).insertAdjacentElement("afterend", slot);
+  renderMath(slot);
+}
+
+function toggleExam(sourceId) {
   const list = document.getElementById(`exam-q-${sourceId}`);
   list.hidden = !list.hidden;
   if (list.hidden) openExams.delete(sourceId); else openExams.add(sourceId);
-  button.textContent = button.textContent.replace(/[▸▾]/, list.hidden ? "▸" : "▾");
+  const button = document.querySelector(`#exam-state-${sourceId} .exam-count`);
+  if (button) button.textContent = button.textContent.replace(/[▸▾]/, list.hidden ? "▸" : "▾");
 }
 
 async function uploadExam(kind) {
