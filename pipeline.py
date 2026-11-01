@@ -6,7 +6,7 @@ from db import get_connection
 from topic_extractor import extract_topics
 from build_hierarchy import build_hierarchy
 from embedder import embed_source
-from math_pages import enqueue_math_pages
+from math_pages import enqueue_vision_pages, read_picture_pages_now
 
 
 def set_stage(job_id: int, stage: str) -> None:
@@ -62,6 +62,12 @@ def run_pipeline(job_id: int, source_id: int, subject_id: int, block_id: int) ->
 
 def _run_pipeline(job_id: int, source_id: int, subject_id: int, block_id: int) -> None:
     try:
+        # Photos or a scan: read from the images first (a no-op for an ordinary PDF).
+        read_picture_pages_now(
+            source_id,
+            on_progress=lambda done, total: set_stage(job_id, f"reading photos {done + 1}/{total}"),
+        )
+
         set_stage(job_id, "topics")
         extract_topics(source_id)
 
@@ -71,9 +77,9 @@ def _run_pipeline(job_id: int, source_id: int, subject_id: int, block_id: int) -
         set_stage(job_id, "hierarchy")
         build_hierarchy(subject_id, block_id)
 
-        # Only marks pages; the formula worker re-reads them in the background.
-        set_stage(job_id, "formulas")
-        enqueue_math_pages(source_id)
+        # Only marks pages; the worker re-reads formulas and pictures in the background.
+        set_stage(job_id, "slides")
+        enqueue_vision_pages(source_id)
 
         finish(job_id, "done")
     except Exception as error:

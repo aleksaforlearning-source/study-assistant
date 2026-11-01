@@ -5,6 +5,7 @@ from groq import Groq, RateLimitError
 
 import hashlib
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import quote
 from datetime import date
 from enum import Enum
@@ -13,7 +14,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from pydantic import BaseModel
 
 from db import get_connection
-from pdf_parser import parse_pdf
+from pdf_parser import files_to_pdf, parse_pdf
 from topic_extractor import extract_topics
 from build_hierarchy import build_hierarchy
 
@@ -25,7 +26,7 @@ from pipeline import fail_interrupted_jobs, run_pipeline
 
 from summarizer import EmptySummaryError, summarize_topic
 from exam_analyzer import run_exam_analysis
-from math_pages import enqueue_math_pages, start_worker
+from math_pages import enqueue_vision_pages, start_worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -958,12 +959,36 @@ class QuestionTopicIn(BaseModel):
     topic_id: int
 
 
-@app.post("/subjects/{subject_id}/exams")
-def upload_exam(subject_id: int, kind: ExamKind = Form(...), file: UploadFile = File(...)):
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=415, detail=f"only PDF for now, got {file.content_type}")
+# Files kept as text and shown as they are: code with highlighting, Markdown rendered.
+TEXT_EXTENSIONS = {
+    ".py", ".java", ".kt", ".scala", ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".go", ".rs",
+    ".js", ".ts", ".rb", ".php", ".swift", ".hs", ".ml", ".r", ".m", ".jl", ".sql", ".sh",
+    ".md", ".txt", ".tex", ".json", ".yaml", ".yml", ".csv",
+}
+MAX_TEXT_BYTES = 2_000_000
 
-    data = file.file.read()
+
+def read_text_upload(files: list[UploadFile]) -> tuple[str, str] | None:
+    """(filename, text) for a single code or Markdown file; None for anything else."""
+    if len(files) != 1 or Path(files[0].filename or "").suffix.lower() not in TEXT_EXTENSIONS:
+        return None
+    data = files[0].file.read()
+    if len(data) > MAX_TEXT_BYTES:
+        raise HTTPException(status_code=413, detail="this text file is larger than 2 MB")
+    return files[0].filename, data.decode("utf-8", errors="replace")
+
+
+def read_upload(files: list[UploadFile]) -> tuple[bytes, str]:
+    """The uploaded PDF, or the photos (and PDFs) put together into one PDF, with its name."""
+    try:
+        return files_to_pdf([(f.filename, f.content_type, f.file.read()) for f in files])
+    except ValueError as error:
+        raise HTTPException(status_code=415, detail=str(error))
+
+
+@app.post("/subjects/{subject_id}/exams")
+def upload_exam(subject_id: int, kind: ExamKind = Form(...), file: list[UploadFile] = File(...)):
+    data, filename = read_upload(file)
     content_hash = hashlib.sha256(data).hexdigest()
 
     with get_connection() as conn:
@@ -984,11 +1009,11 @@ def upload_exam(subject_id: int, kind: ExamKind = Form(...), file: UploadFile = 
             cur.execute(
                 "INSERT INTO sources (subject_id, type, filename, content_hash, pdf) "
                 "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (subject_id, EXAM_TYPES[kind].value, file.filename, content_hash, data),
+                (subject_id, EXAM_TYPES[kind].value, filename, content_hash, data),
             )
             source_id = cur.fetchone()[0]
 
-    return {"source_id": source_id, "filename": file.filename, "kind": kind.value}
+    return {"source_id": source_id, "filename": filename, "kind": kind.value}
 
 
 @app.get("/subjects/{subject_id}/exams")
@@ -1511,15 +1536,10 @@ def upload_to_block(
     block_id: int,
     background_tasks: BackgroundTasks,
     source_type: SourceType = Form(...),
-    file: UploadFile = File(...),
+    file: list[UploadFile] = File(...),
 ):
-    if file.content_type != "application/pdf":
-        raise HTTPException(
-            status_code=415,
-            detail=f"only PDF for now, got {file.content_type}",
-        )
-
-    data = file.file.read()
+    text_file = read_text_upload(file)
+    data, filename = (text_file[1].encode(), text_file[0]) if text_file else read_upload(file)
     content_hash = hashlib.sha256(data).hexdigest()
 
     with get_connection() as conn:
@@ -1541,12 +1561,22 @@ def upload_to_block(
                     detail=f"already uploaded as source {existing[0]}",
                 )
 
+            # Code or Markdown: kept to be shown as it is, no pages and no topics.
+            if text_file:
+                cur.execute(
+                    "INSERT INTO sources (subject_id, block_id, type, filename, content_hash, text_content) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    (subject_id, block_id, source_type.value, filename, content_hash, text_file[1]),
+                )
+                return {"job_id": None, "source_id": cur.fetchone()[0], "filename": filename,
+                        "chunks": 0, "weak_chunks": 0}
+
             chunks = parse_pdf(data)
 
             cur.execute(
                 "INSERT INTO sources (subject_id, block_id, type, filename, content_hash, pdf) "
                 "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (subject_id, block_id, source_type.value, file.filename, content_hash, data),
+                (subject_id, block_id, source_type.value, filename, content_hash, data),
             )
             source_id = cur.fetchone()[0]
 
@@ -1570,14 +1600,14 @@ def upload_to_block(
     if job_id is not None:
         background_tasks.add_task(run_pipeline, job_id, source_id, subject_id, block_id)
     elif source_type != SourceType.my_solution:
-        # Fix formulas now, so a later analyse reads clean text. Own solutions are
-        # never analysed by default, so they cost no vision tokens.
-        background_tasks.add_task(enqueue_math_pages, source_id)
+        # Fix formulas and describe pictures now, so a later analyse reads clean text.
+        # Own solutions are never analysed by default, so they cost no vision tokens.
+        background_tasks.add_task(enqueue_vision_pages, source_id)
 
     return {
         "job_id": job_id,
         "source_id": source_id,
-        "filename": file.filename,
+        "filename": filename,
         "chunks": len(chunks),
         "weak_chunks": sum(1 for c in chunks if c["is_weak"]),
     }
@@ -1644,18 +1674,22 @@ class SourcePatch(BaseModel):
 
 @app.patch("/sources/{source_id}")
 def rename_source(source_id: int, patch: SourcePatch):
-    """Only the name shown in the app changes; the stored PDF stays as it is."""
+    """Only the name shown in the app changes; the stored file stays as it is.
+    The extension is kept (".pdf", or ".py" for code) when the new name has none."""
     name = patch.filename.strip()
     if not name:
         raise HTTPException(status_code=400, detail="name cannot be empty")
-    if not name.lower().endswith(".pdf"):
-        name += ".pdf"
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE sources SET filename = %s WHERE id = %s RETURNING id", (name, source_id))
-            if cur.fetchone() is None:
+            cur.execute("SELECT filename FROM sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+            if row is None:
                 raise HTTPException(status_code=404, detail=f"source {source_id} not found")
+            extension = Path(row[0] or "").suffix or ".pdf"
+            if not name.lower().endswith(extension.lower()):
+                name += extension
+            cur.execute("UPDATE sources SET filename = %s WHERE id = %s", (name, source_id))
 
     return {"source_id": source_id, "filename": name}
 
@@ -1667,7 +1701,8 @@ def list_block_files(block_id: int):
             # With the file's latest job, so the page can keep showing the
             # progress of a lecture that is still processing after a reload.
             cur.execute(
-                "SELECT s.id, s.filename, s.type, (s.pdf IS NOT NULL), j.id, j.stage, j.status "
+                "SELECT s.id, s.filename, s.type, (s.pdf IS NOT NULL), j.id, j.stage, j.status, "
+                "(s.text_content IS NOT NULL) "
                 "FROM sources s LEFT JOIN LATERAL ("
                 "  SELECT id, stage, status FROM jobs WHERE source_id = s.id ORDER BY id DESC LIMIT 1"
                 ") j ON true "
@@ -1675,10 +1710,22 @@ def list_block_files(block_id: int):
                 (block_id,),
             )
             return [
-                {"source_id": r[0], "filename": r[1], "type": r[2], "has_pdf": r[3],
+                {"source_id": r[0], "filename": r[1], "type": r[2], "has_pdf": r[3], "has_text": r[7],
                  "job": {"job_id": r[4], "stage": r[5], "status": r[6]} if r[4] else None}
                 for r in cur.fetchall()
             ]
+
+
+@app.get("/sources/{source_id}/text")
+def get_source_text(source_id: int):
+    """A code or Markdown file, for the viewer."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT filename, text_content FROM sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+    if row is None or row[1] is None:
+        raise HTTPException(status_code=404, detail="no text file stored for this source")
+    return {"source_id": source_id, "filename": row[0], "text": row[1]}
 
 
 @app.post("/sources/{source_id}/pdf")
