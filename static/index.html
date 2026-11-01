@@ -109,8 +109,7 @@
   .back-link:hover { color: var(--text); }
 
   /* subjects page: one card per subject, the nearest exam first */
-  .home-head { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 16px; }
-  .home-title { margin: 0; font-size: 26px; font-weight: 600; }
+  .home-head { margin: 8px 0 16px; }
   .subject-card { display: flex; align-items: center; gap: 16px; width: 100%; margin-bottom: 10px;
                   padding: 16px 18px; text-align: left; border: 1px solid var(--border);
                   border-radius: 12px; background: var(--surface); cursor: pointer; }
@@ -148,7 +147,7 @@
   .ds-label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .ad-text { white-space: pre-line; }
-  #ad-input { width: 100%; margin-top: 4px; }
+  #ad-input, #ad-select { width: 100%; margin-top: 4px; }
   .danger-btn { background: var(--red); border-color: var(--red); color: #fff; }
   .danger-btn:hover { background: #e9808a; border-color: #e9808a; }
   .danger-btn:disabled, .danger-btn:disabled:hover { background: var(--surface-2); border-color: var(--border); color: var(--faint); }
@@ -258,15 +257,15 @@
   .exam-edit { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
   .exam-edit input[type=date] { width: auto; padding: 5px 10px; font-size: 13px; }
 
-  /* notion-style subject picker */
-  #subject { appearance: none; -webkit-appearance: none; font-size: 26px; font-weight: 600;
+  /* notion-style subject and semester pickers */
+  .big-picker { appearance: none; -webkit-appearance: none; font-size: 26px; font-weight: 600;
              letter-spacing: -.01em; padding: 4px 36px 4px 8px; margin-left: -8px;
              max-width: 100%; border: 1px solid transparent; border-radius: 6px; cursor: pointer;
              background: transparent no-repeat right 10px center / 14px
                url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236f6e69' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
              transition: background-color .15s; }
-  #subject:hover, #subject:focus { background-color: var(--hover); }
-  #subject option { font-size: 15px; font-weight: 400; }
+  .big-picker:hover, .big-picker:focus { background-color: var(--hover); }
+  .big-picker option { font-size: 15px; font-weight: 400; }
 
   /* blocks */
   .empty { color: var(--faint); }
@@ -517,11 +516,21 @@
     <div class="main-inner">
       <h1><a href="#" title="all subjects">study assistant</a></h1>
 
-      <!-- The first page: every subject with its exam date -->
+      <!-- The first page: the subjects of a semester with their exam dates -->
       <div id="home" hidden>
-        <div class="home-head">
-          <h2 class="home-title">Subjects</h2>
-          <button class="ghost" onclick="addSubject()">+ subject</button>
+        <div class="toolbar home-head">
+          <select id="semester" class="big-picker" aria-label="semester"></select>
+          <span class="menu-wrap">
+            <button class="icon-btn menu-btn" title="semester options" aria-label="semester options"
+                    onclick="toggleMenu(event, 'semester-menu')">⋯</button>
+            <div class="menu" id="semester-menu" hidden>
+              <button onclick="renameSemester()">rename</button>
+              <button class="menu-danger" onclick="openDeleteSemester()">delete semester</button>
+            </div>
+          </span>
+          <span class="spacer"></span>
+          <button class="ghost" onclick="addSemester()">+ semester</button>
+          <button class="ghost" id="add-subject" onclick="addSubject()">+ subject</button>
         </div>
         <div id="subject-cards"></div>
       </div>
@@ -529,12 +538,13 @@
       <div id="subject-page" hidden>
       <div class="toolbar">
         <a class="back-link" href="#" title="all subjects">← subjects</a>
-        <select id="subject" aria-label="subject"></select>
+        <select id="subject" class="big-picker" aria-label="subject"></select>
         <span class="menu-wrap">
           <button class="icon-btn menu-btn" title="subject options" aria-label="subject options"
-                  onclick="toggleSubjectMenu(event)">⋯</button>
+                  onclick="toggleMenu(event, 'subject-menu')">⋯</button>
           <div class="menu" id="subject-menu" hidden>
             <button onclick="renameSubject()">rename</button>
+            <button onclick="moveSubject()">move to semester…</button>
             <button class="menu-danger" onclick="openDeleteSubject()">delete subject</button>
           </div>
         </span>
@@ -564,21 +574,23 @@
     <h2 id="ad-title"></h2>
     <p class="ad-text" id="ad-text"></p>
     <input id="ad-input" autocomplete="off">
+    <select id="ad-select"></select>
     <div class="dialog-actions">
       <button class="ghost" id="ad-cancel">cancel</button>
       <button class="primary" id="ad-ok">ok</button>
     </div>
   </dialog>
 
+  <!-- Deleting a subject or a whole semester: the name has to be typed first -->
   <dialog class="confirm-dialog" id="delete-subject">
-    <h2>Delete subject “<span id="ds-name"></span>”?</h2>
+    <h2>Delete <span class="ds-kind"></span> “<span id="ds-name"></span>”?</h2>
     <p>Everything inside will be deleted:</p>
     <p class="ds-counts" id="ds-counts"></p>
-    <label class="ds-label" for="ds-input">To confirm, type the subject name:</label>
+    <label class="ds-label" for="ds-input">To confirm, type the <span class="ds-kind"></span> name:</label>
     <input id="ds-input" autocomplete="off">
     <div class="dialog-actions">
       <button class="ghost" onclick="document.getElementById('delete-subject').close()">cancel</button>
-      <button class="danger-btn" id="ds-confirm" disabled onclick="deleteSubject()">delete</button>
+      <button class="danger-btn" id="ds-confirm" disabled>delete</button>
     </div>
   </dialog>
 
@@ -641,12 +653,15 @@ const escapeHtml = text => text
 // ---- Dialogs in the app's style: showAlert, askConfirm, askText ----
 // One <dialog> serves all three. Each returns a promise: askConfirm gives
 // true or false, askText the typed text or null; Esc and cancel say no.
+// With choices ([{ value, label }]) it asks to pick one and gives its value or null.
 
-function openAppDialog({ title, text = "", input = null, ok = "ok", cancel = true, danger = false }) {
+function openAppDialog({ title, text = "", input = null, choices = null, ok = "ok", cancel = true, danger = false }) {
   const dialog = document.getElementById("app-dialog");
   const field = document.getElementById("ad-input");
+  const picker = document.getElementById("ad-select");
   const okButton = document.getElementById("ad-ok");
   const cancelButton = document.getElementById("ad-cancel");
+  const asks = input !== null || choices !== null;   // an answer, not just yes or no
 
   document.getElementById("ad-title").textContent = title;
   const textBox = document.getElementById("ad-text");
@@ -654,6 +669,9 @@ function openAppDialog({ title, text = "", input = null, ok = "ok", cancel = tru
   textBox.hidden = !text;
   field.hidden = input === null;
   field.value = input ?? "";
+  picker.hidden = choices === null;
+  picker.innerHTML = (choices ?? [])
+    .map(c => `<option value="${escapeHtml(String(c.value))}">${escapeHtml(c.label)}</option>`).join("");
   cancelButton.hidden = !cancel;
   okButton.textContent = ok;
   okButton.className = danger ? "danger-btn" : "primary";
@@ -663,8 +681,8 @@ function openAppDialog({ title, text = "", input = null, ok = "ok", cancel = tru
       dialog.close();
       resolve(value);
     };
-    okButton.onclick = () => finish(input === null ? true : field.value);
-    cancelButton.onclick = () => finish(input === null ? false : null);
+    okButton.onclick = () => finish(!asks ? true : choices !== null ? picker.value : field.value);
+    cancelButton.onclick = () => finish(asks ? null : false);
     // Esc closes a <dialog> by itself; this makes it answer "no" first.
     dialog.oncancel = event => {
       event.preventDefault();
@@ -674,8 +692,9 @@ function openAppDialog({ title, text = "", input = null, ok = "ok", cancel = tru
       if (event.key === "Enter") okButton.onclick();
     };
     dialog.showModal();
-    if (input === null) okButton.focus();
-    else field.select();
+    if (input !== null) field.select();
+    else if (choices !== null) picker.focus();
+    else okButton.focus();
   });
 }
 
@@ -1685,17 +1704,43 @@ async function saveNoteEdit(noteId, topicId, blockId) {
 // Kept from the last /subjects call, so the exam line can read the selected subject.
 let subjectList = [];
 
+// ---- Semesters: the subjects page shows one semester; the newest is the default ----
+
+let semesterList = [];
+const SEMESTER_KEY = "study-assistant:semester";
+
+function currentSemesterId() {
+  const saved = Number(loadState(SEMESTER_KEY, null));
+  return semesterList.some(s => s.id === saved) ? saved : semesterList.at(-1)?.id ?? null;
+}
+
+function selectSemester(semesterId) {
+  saveState(SEMESTER_KEY, Number(semesterId));
+}
+
 async function loadSubjects() {
-  const subjects = await fetch("/subjects").then(r => r.json());
-  subjectList = subjects;
-  const select = document.getElementById("subject");
+  [subjectList, semesterList] = await Promise.all([
+    fetch("/subjects").then(r => r.json()),
+    fetch("/semesters").then(r => r.json()),
+  ]);
 
-  select.innerHTML = subjects
-    .map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`)
-    .join("");
+  const semesterSelect = document.getElementById("semester");
+  semesterSelect.innerHTML = semesterList
+    .map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  semesterSelect.onchange = () => {
+    selectSemester(semesterSelect.value);
+    showHome();
+  };
 
-  select.onchange = () => openSubject(select.value);
+  document.getElementById("subject").onchange = event => openSubject(event.target.value);
   route();
+}
+
+// The subject picker lists the subjects of the open subject's semester.
+function fillSubjectPicker(semesterId) {
+  document.getElementById("subject").innerHTML = subjectList
+    .filter(s => s.semester_id === semesterId)
+    .map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
 }
 
 // ---- Pages: the subjects list (#) and one subject (#subject-5) ----
@@ -1718,6 +1763,10 @@ function route() {
 }
 
 function showSubject(subjectId) {
+  const subject = subjectList.find(s => s.id === subjectId);
+  // Back on the subjects page, the semester of this subject is the one shown.
+  selectSemester(subject.semester_id);
+  fillSubjectPicker(subject.semester_id);
   document.getElementById("subject").value = subjectId;
   renderExam();
   // restoreScroll only acts on the first load: blocks and panels are open by then.
@@ -1732,11 +1781,20 @@ async function showHome() {
   // Fresh counts: topics marked known inside a subject change the progress.
   subjectList = await fetch("/subjects").then(r => r.json());
 
+  const semesterId = currentSemesterId();
+  document.getElementById("semester").value = semesterId ?? "";
+  document.getElementById("add-subject").hidden = semesterId === null;
+  if (semesterId === null) {
+    document.getElementById("subject-cards").innerHTML =
+      `<p class="empty">no semesters yet — create one with + semester</p>`;
+    return;
+  }
+
   const order = s => {
     const info = examInfo(s);
     return info.days === null ? [1, 0] : info.days >= 0 ? [0, info.days] : [2, -info.days];
   };
-  const sorted = [...subjectList].sort((a, b) => {
+  const sorted = subjectList.filter(s => s.semester_id === semesterId).sort((a, b) => {
     const [ga, da] = order(a), [gb, db] = order(b);
     return ga - gb || da - db;
   });
@@ -1760,17 +1818,101 @@ async function showHome() {
   }).join("") || `<p class="empty">no subjects yet — create one with + subject</p>`;
 }
 
-function toggleSubjectMenu(event) {
+function toggleMenu(event, menuId) {
   // Without this the click would reach the document listener below and close the menu again.
   event.stopPropagation();
-  const menu = document.getElementById("subject-menu");
+  const menu = document.getElementById(menuId);
   menu.hidden = !menu.hidden;
 }
 
-// Any click elsewhere on the page closes the menu.
+// Any click elsewhere on the page closes the menus.
 document.addEventListener("click", () => {
-  document.getElementById("subject-menu").hidden = true;
+  document.querySelectorAll(".menu").forEach(menu => { menu.hidden = true; });
 });
+
+async function addSemester() {
+  const name = await askText("New semester, e.g. Semester 4", "", "create");
+  if (!name || !name.trim()) return;
+
+  const response = await fetch("/semesters", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    showAlert(`failed: ${error.detail ?? response.status}`);
+    return;
+  }
+  selectSemester((await response.json()).id);
+  history.replaceState(null, "", location.pathname);
+  await loadSubjects();
+}
+
+async function renameSemester() {
+  const semester = semesterList.find(s => s.id === currentSemesterId());
+  if (!semester) return;
+
+  const name = await askText("Rename semester", semester.name);
+  if (!name || !name.trim() || name.trim() === semester.name) return;
+
+  const response = await fetch(`/semesters/${semester.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    showAlert(`failed: ${error.detail ?? response.status}`);
+    return;
+  }
+  await loadSubjects();
+}
+
+async function openDeleteSemester() {
+  const semesterId = currentSemesterId();
+  if (semesterId === null) return;
+  const impact = await fetch(`/semesters/${semesterId}/delete-preview`).then(r => r.json());
+  openDeleteDialog("semester", impact.name,
+    `${count(impact.subjects, "subject")} · ${count(impact.files, "file")} · ` +
+    `${count(impact.topics, "topic")} · ${count(impact.notes, "note")}`,
+    async () => {
+      const response = await fetch(`/semesters/${semesterId}`, { method: "DELETE" });
+      if (!response.ok) return response;
+      history.replaceState(null, "", location.pathname);
+      await loadSubjects();
+      return response;
+    });
+}
+
+async function moveSubject() {
+  const subject = currentSubject();
+  if (!subject) return;
+  const others = semesterList.filter(s => s.id !== subject.semester_id);
+  if (!others.length) {
+    showAlert("There is no other semester yet\n\nCreate one with + semester on the subjects page.");
+    return;
+  }
+
+  const target = await openAppDialog({
+    title: `Move “${subject.name}” to`,
+    choices: others.map(s => ({ value: s.id, label: s.name })),
+    ok: "move",
+  });
+  if (!target) return;
+
+  const response = await fetch(`/subjects/${subject.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ semester_id: Number(target) }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    showAlert(`failed: ${error.detail ?? response.status}`);
+    return;
+  }
+  await loadSubjects();
+}
 
 async function renameSubject() {
   const subject = currentSubject();
@@ -1797,10 +1939,26 @@ async function openDeleteSubject() {
   if (!subject) return;
 
   const impact = await fetch(`/subjects/${subject.id}/delete-preview`).then(r => r.json());
-  document.getElementById("ds-name").textContent = impact.name;
-  document.getElementById("ds-counts").textContent =
+  openDeleteDialog("subject", impact.name,
     `${count(impact.blocks, "block")} · ${count(impact.files, "file")} · ` +
-    `${count(impact.topics, "topic")} · ${count(impact.notes, "note")}`;
+    `${count(impact.topics, "topic")} · ${count(impact.notes, "note")}`,
+    async () => {
+      const response = await fetch(`/subjects/${subject.id}`, { method: "DELETE" });
+      if (!response.ok) return response;
+      // The deleted subject's page is gone: back to the list, without a history entry to it.
+      history.replaceState(null, "", location.pathname);
+      await loadSubjects();
+      return response;
+    });
+}
+
+// The delete dialog for a subject or a semester. remove() does the deleting and
+// returns the response; the dialog shows its error or closes.
+function openDeleteDialog(kind, name, counts, remove) {
+  const dialog = document.getElementById("delete-subject");
+  dialog.querySelectorAll(".ds-kind").forEach(el => { el.textContent = kind; });
+  document.getElementById("ds-name").textContent = name;
+  document.getElementById("ds-counts").textContent = counts;
 
   // The delete button only unlocks once the typed name matches exactly.
   const input = document.getElementById("ds-input");
@@ -1808,26 +1966,22 @@ async function openDeleteSubject() {
   input.value = "";
   confirmButton.disabled = true;
   input.oninput = () => {
-    confirmButton.disabled = input.value.trim() !== impact.name;
+    confirmButton.disabled = input.value.trim() !== name;
+  };
+  confirmButton.onclick = async () => {
+    confirmButton.disabled = true;
+    const response = await remove();
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      showAlert(`failed: ${error.detail ?? response.status}`);
+      confirmButton.disabled = false;
+      return;
+    }
+    dialog.close();
   };
 
-  document.getElementById("delete-subject").showModal();
+  dialog.showModal();
   input.focus();
-}
-
-async function deleteSubject() {
-  const subject = currentSubject();
-  const response = await fetch(`/subjects/${subject.id}`, { method: "DELETE" });
-  if (!response.ok) {
-    const error = await response.json();
-    showAlert(`failed: ${error.detail}`);
-    return;
-  }
-
-  document.getElementById("delete-subject").close();
-  // The deleted subject's page is gone: back to the list, without a history entry to it.
-  history.replaceState(null, "", location.pathname);
-  await loadSubjects();
 }
 
 function currentSubject() {
@@ -2889,7 +3043,8 @@ async function addSubject() {
   const response = await fetch("/subjects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: name.trim() }),
+    // into the semester shown on the subjects page
+    body: JSON.stringify({ name: name.trim(), semester_id: currentSemesterId() }),
   });
 
   if (!response.ok) {

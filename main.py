@@ -101,6 +101,11 @@ Rules:
 class SubjectIn(BaseModel):
     name: str
     exam_date: str | None = None
+    semester_id: int | None = None
+
+
+class SemesterIn(BaseModel):
+    name: str
 
 # Every table with a topic_id column. Deleting a topic clears these first,
 # because the database refuses to delete a row something still points at.
@@ -111,6 +116,8 @@ class SubjectPatch(BaseModel):
     name: str | None = None
     # null clears the date; leaving the field out keeps it as it is
     exam_date: date | None = None
+    # moves the subject to another semester
+    semester_id: int | None = None
 
 
 class NoteIn(BaseModel):
@@ -172,12 +179,16 @@ def health_check():
 def create_subject(subject: SubjectIn):
     with get_connection() as conn:
         with conn.cursor() as cur:
+            if subject.semester_id is not None:
+                cur.execute("SELECT 1 FROM semesters WHERE id = %s", (subject.semester_id,))
+                if cur.fetchone() is None:
+                    raise HTTPException(status_code=404, detail=f"semester {subject.semester_id} not found")
             cur.execute(
-                "INSERT INTO subjects (name, exam_date) VALUES (%s, %s) RETURNING id",
-                (subject.name, subject.exam_date),
+                "INSERT INTO subjects (name, exam_date, semester_id) VALUES (%s, %s, %s) RETURNING id",
+                (subject.name, subject.exam_date, subject.semester_id),
             )
             new_id = cur.fetchone()[0]
-    return {"id": new_id, "name": subject.name}
+    return {"id": new_id, "name": subject.name, "semester_id": subject.semester_id}
 
 
 @app.get("/subjects")
@@ -188,12 +199,14 @@ def list_subjects():
             cur.execute(
                 "SELECT s.id, s.name, s.exam_date, "
                 "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id), "
-                "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id AND t.status = 'known') "
+                "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id AND t.status = 'known'), "
+                "s.semester_id "
                 "FROM subjects s ORDER BY s.id"
             )
             rows = cur.fetchall()
     return [
-        {"id": row[0], "name": row[1], "exam_date": row[2], "topics": row[3], "known": row[4]}
+        {"id": row[0], "name": row[1], "exam_date": row[2], "topics": row[3], "known": row[4],
+         "semester_id": row[5]}
         for row in rows
     ]
 
@@ -221,10 +234,19 @@ def update_subject(subject_id: int, patch: SubjectPatch):
                     (patch.exam_date, subject_id),
                 )
 
-            cur.execute("SELECT id, name, exam_date FROM subjects WHERE id = %s", (subject_id,))
+            if "semester_id" in patch.model_fields_set:
+                cur.execute("SELECT 1 FROM semesters WHERE id = %s", (patch.semester_id,))
+                if cur.fetchone() is None:
+                    raise HTTPException(status_code=404, detail=f"semester {patch.semester_id} not found")
+                cur.execute(
+                    "UPDATE subjects SET semester_id = %s WHERE id = %s",
+                    (patch.semester_id, subject_id),
+                )
+
+            cur.execute("SELECT id, name, exam_date, semester_id FROM subjects WHERE id = %s", (subject_id,))
             row = cur.fetchone()
 
-    return {"id": row[0], "name": row[1], "exam_date": row[2]}
+    return {"id": row[0], "name": row[1], "exam_date": row[2], "semester_id": row[3]}
 
 
 @app.get("/subjects/{subject_id}/delete-preview")
@@ -248,6 +270,45 @@ def preview_subject_deletion(subject_id: int):
             "files": row[2], "topics": row[3], "notes": row[4]}
 
 
+def refuse_while_processing(cur, subject_ids: list[int], what: str) -> None:
+    cur.execute(
+        "SELECT 1 FROM jobs j JOIN sources s ON s.id = j.source_id "
+        "WHERE s.subject_id = ANY(%s) AND j.status = 'running'",
+        (subject_ids,),
+    )
+    if cur.fetchone():
+        raise HTTPException(
+            status_code=409,
+            detail=f"a file of this {what} is still being processed, delete it when that finishes",
+        )
+
+
+def remove_subject(cur, subject_id: int) -> None:
+    """Deletes a subject with everything in it."""
+    topics = "SELECT id FROM topics WHERE subject_id = %s"
+    sources = "SELECT id FROM sources WHERE subject_id = %s"
+    args = (subject_id,)
+
+    # From the leaves to the root, so nothing still points at a deleted row.
+    for table in TOPIC_CHILD_TABLES:
+        cur.execute(f"DELETE FROM {table} WHERE topic_id IN ({topics})", args)
+    cur.execute(
+        f"DELETE FROM exam_question_topics WHERE question_id IN "
+        f"(SELECT id FROM exam_questions WHERE source_id IN ({sources}))",
+        args,
+    )
+    for table in ("techniques", "exam_questions"):
+        cur.execute(f"DELETE FROM {table} WHERE source_id IN ({sources})", args)
+    cur.execute(f"DELETE FROM topic_chunks WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id IN ({sources}))", args)
+    cur.execute("UPDATE topics SET parent_id = NULL WHERE subject_id = %s", args)
+    cur.execute("DELETE FROM topics WHERE subject_id = %s", args)
+    for table in ("chunks", "jobs"):
+        cur.execute(f"DELETE FROM {table} WHERE source_id IN ({sources})", args)
+    cur.execute("DELETE FROM sources WHERE subject_id = %s", args)
+    cur.execute("DELETE FROM blocks WHERE subject_id = %s", args)
+    cur.execute("DELETE FROM subjects WHERE id = %s", args)
+
+
 @app.delete("/subjects/{subject_id}")
 def delete_subject(subject_id: int):
     with get_connection() as conn:
@@ -257,41 +318,90 @@ def delete_subject(subject_id: int):
             if row is None:
                 raise HTTPException(status_code=404, detail=f"subject {subject_id} not found")
 
-            cur.execute(
-                "SELECT 1 FROM jobs j JOIN sources s ON s.id = j.source_id "
-                "WHERE s.subject_id = %s AND j.status = 'running'",
-                (subject_id,),
-            )
-            if cur.fetchone():
-                raise HTTPException(
-                    status_code=409,
-                    detail="a file of this subject is still being processed, delete it when that finishes",
-                )
-
-            topics = "SELECT id FROM topics WHERE subject_id = %s"
-            sources = "SELECT id FROM sources WHERE subject_id = %s"
-            args = (subject_id,)
-
-            # From the leaves to the root, so nothing still points at a deleted row.
-            for table in TOPIC_CHILD_TABLES:
-                cur.execute(f"DELETE FROM {table} WHERE topic_id IN ({topics})", args)
-            cur.execute(
-                f"DELETE FROM exam_question_topics WHERE question_id IN "
-                f"(SELECT id FROM exam_questions WHERE source_id IN ({sources}))",
-                args,
-            )
-            for table in ("techniques", "exam_questions"):
-                cur.execute(f"DELETE FROM {table} WHERE source_id IN ({sources})", args)
-            cur.execute(f"DELETE FROM topic_chunks WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id IN ({sources}))", args)
-            cur.execute("UPDATE topics SET parent_id = NULL WHERE subject_id = %s", args)
-            cur.execute("DELETE FROM topics WHERE subject_id = %s", args)
-            for table in ("chunks", "jobs"):
-                cur.execute(f"DELETE FROM {table} WHERE source_id IN ({sources})", args)
-            cur.execute("DELETE FROM sources WHERE subject_id = %s", args)
-            cur.execute("DELETE FROM blocks WHERE subject_id = %s", args)
-            cur.execute("DELETE FROM subjects WHERE id = %s", args)
+            refuse_while_processing(cur, [subject_id], "subject")
+            remove_subject(cur, subject_id)
 
     return {"deleted": subject_id, "name": row[0]}
+
+
+# ---- Semesters: the level above subjects ----
+
+@app.get("/semesters")
+def list_semesters():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT se.id, se.name, (SELECT count(*) FROM subjects s WHERE s.semester_id = se.id) "
+                "FROM semesters se ORDER BY se.id"
+            )
+            return [{"id": r[0], "name": r[1], "subjects": r[2]} for r in cur.fetchall()]
+
+
+@app.post("/semesters")
+def create_semester(body: SemesterIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name cannot be empty")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO semesters (name) VALUES (%s) RETURNING id", (name,))
+            semester_id = cur.fetchone()[0]
+    return {"id": semester_id, "name": name}
+
+
+@app.patch("/semesters/{semester_id}")
+def rename_semester(semester_id: int, body: SemesterIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name cannot be empty")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE semesters SET name = %s WHERE id = %s RETURNING id", (name, semester_id))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"semester {semester_id} not found")
+    return {"id": semester_id, "name": name}
+
+
+@app.get("/semesters/{semester_id}/delete-preview")
+def preview_semester_deletion(semester_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT se.name, "
+                "(SELECT count(*) FROM subjects WHERE semester_id = se.id), "
+                "(SELECT count(*) FROM sources so JOIN subjects s ON s.id = so.subject_id WHERE s.semester_id = se.id), "
+                "(SELECT count(*) FROM topics t JOIN subjects s ON s.id = t.subject_id WHERE s.semester_id = se.id), "
+                "(SELECT count(*) FROM notes n JOIN topics t ON t.id = n.topic_id "
+                " JOIN subjects s ON s.id = t.subject_id WHERE s.semester_id = se.id) "
+                "FROM semesters se WHERE se.id = %s",
+                (semester_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"semester {semester_id} not found")
+
+    return {"semester_id": semester_id, "name": row[0], "subjects": row[1],
+            "files": row[2], "topics": row[3], "notes": row[4]}
+
+
+@app.delete("/semesters/{semester_id}")
+def delete_semester(semester_id: int):
+    """Deletes the semester with its subjects, each the way a single subject is deleted."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM semesters WHERE id = %s", (semester_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"semester {semester_id} not found")
+
+            cur.execute("SELECT id FROM subjects WHERE semester_id = %s", (semester_id,))
+            subject_ids = [r[0] for r in cur.fetchall()]
+            refuse_while_processing(cur, subject_ids, "semester")
+            for subject_id in subject_ids:
+                remove_subject(cur, subject_id)
+            cur.execute("DELETE FROM semesters WHERE id = %s", (semester_id,))
+
+    return {"deleted": semester_id, "name": row[0], "subjects_removed": len(subject_ids)}
 
 from enum import Enum
 

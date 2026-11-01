@@ -108,3 +108,18 @@ ALTER TABLE notes ADD COLUMN IF NOT EXISTS revisit BOOLEAN NOT NULL DEFAULT fals
 -- A summary saved empty counted as present in the block but showed "generate" in
 -- the topic; empty now means none, and 'ai' lets generating fill it.
 UPDATE topics SET summary = NULL, summary_origin = 'ai' WHERE btrim(summary) = '';
+
+-- Subjects are grouped by semester.
+CREATE TABLE IF NOT EXISTS semesters (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE subjects ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id);
+
+-- Subjects from before semesters existed go into one, the current Semester 3.
+INSERT INTO semesters (name)
+SELECT 'Semester 3'
+WHERE EXISTS (SELECT 1 FROM subjects WHERE semester_id IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM semesters);
+UPDATE subjects SET semester_id = (SELECT min(id) FROM semesters) WHERE semester_id IS NULL;
