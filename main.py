@@ -1114,6 +1114,26 @@ def add_questions(cur, files: list[dict]) -> None:
 
 
 
+@app.get("/topics/{topic_id}/questions")
+def topic_questions(topic_id: int):
+    """Exam questions and homework tasks linked to a topic, for the reasons in Focus."""
+    kinds = {**EXAM_KINDS, SourceType.homework.value: "homework"}
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT q.id, q.number, q.text, q.page, s.id, s.filename, s.type "
+                "FROM exam_question_topics qt JOIN exam_questions q ON q.id = qt.question_id "
+                "JOIN sources s ON s.id = q.source_id "
+                "WHERE qt.topic_id = %s AND s.type = ANY(%s) ORDER BY s.id, q.position",
+                (topic_id, list(kinds)),
+            )
+            return [
+                {"question_id": r[0], "number": r[1], "text": r[2], "page": r[3],
+                 "source_id": r[4], "filename": r[5], "kind": kinds[r[6]]}
+                for r in cur.fetchall()
+            ]
+
+
 @app.post("/sources/{source_id}/analyse")
 def start_exam_analysis(source_id: int, background_tasks: BackgroundTasks):
     with get_connection() as conn:

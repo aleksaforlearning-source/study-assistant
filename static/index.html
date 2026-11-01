@@ -184,11 +184,20 @@
                 font-variant-numeric: tabular-nums; }
   .focus-why { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
   .why { padding: 0 7px; border-radius: 999px; font-size: 11.5px; white-space: nowrap; }
-  .why-exam { color: #ef8fb8; background: rgba(239, 143, 184, 0.10); }
-  .why-unclear { color: #f0b86e; background: rgba(240, 184, 110, 0.12); }
-  .why-review { color: var(--red); background: rgba(224, 108, 117, 0.12); }
-  .why-technique { color: var(--violet); background: var(--violet-soft); }
-  .why-revisit { color: var(--teal); background: var(--teal-soft); }
+  /* two classes, so a reason that is a button keeps its colour over button:hover */
+  .why.why-exam { color: #ef8fb8; background: rgba(239, 143, 184, 0.10); }
+  .why.why-unclear { color: #f0b86e; background: rgba(240, 184, 110, 0.12); }
+  .why.why-review { color: var(--red); background: rgba(224, 108, 117, 0.12); }
+  .why.why-technique { color: var(--violet); background: var(--violet-soft); }
+  .why.why-revisit { color: var(--teal); background: var(--teal-soft); }
+  /* a reason in Focus opens what is behind it */
+  button.why { border: 0; line-height: 1.6; font-size: 11.5px; padding: 0 7px; }
+  button.why:hover { filter: brightness(1.35); }
+  .focus-questions { margin: 2px 0 12px 34px; padding: 4px 0 4px 14px; border-left: 2px solid var(--border); }
+  .fq + .fq { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--surface-2); }
+  .fq-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .fq-head .icon-btn { width: 24px; height: 24px; }
+  .fq-text { margin-top: 4px; font-size: 14px; }
 
   /* Notes on the text: dotted teal underline, the note pops up on hover */
   ::highlight(annotated) { background-color: rgba(79, 209, 197, 0.08); text-decoration: underline dotted #5fd4c8;
@@ -971,9 +980,10 @@ function closePanel(topicId) {
   forgetOpenPanel(topicId);
 }
 
-// Closes every open topic panel; the blocks stay unfolded.
+// Closes every open topic panel and question list of Focus; the blocks stay unfolded.
 function collapseAll() {
   hideNoteTip();
+  document.querySelectorAll(".focus-questions").forEach(list => list.remove());
   document.querySelectorAll(".panel").forEach(panel => closePanel(Number(panel.id.replace("panel-", ""))));
 }
 
@@ -2141,16 +2151,57 @@ function loadView(subjectId) {
   return VIEWS[currentView](subjectId);
 }
 
-// Why a topic is high in Focus: one small label per signal that counts.
-function focusReasons(t) {
+// Why a topic is high in Focus: one small label per signal that counts. Each
+// opens what is behind it: exam questions and homework tasks unfold under the
+// row; review, unclear places and shaky notes live in the topic's panel.
+function focusReasons(t, blockId) {
+  const questions = (kind, cls, label) =>
+    `<button class="why ${cls}" title="show them" onclick="toggleTopicQuestions(${t.id}, '${kind}', this)">${label}</button>`;
+  const panel = (cls, label) =>
+    `<button class="why ${cls}" title="open the topic" onclick="togglePanel(${t.id}, ${blockId}, this)">${label}</button>`;
   return [
-    t.finals ? `<span class="why why-exam">★ ${t.finals} final</span>` : "",
-    t.tests ? `<span class="why why-exam">☆ ${count(t.tests, "test")}</span>` : "",
-    t.unclear ? `<span class="why why-unclear">?${t.unclear} unclear</span>` : "",
-    t.status === "review" ? `<span class="why why-review">review</span>` : "",
-    t.homework ? `<span class="why why-technique">✎ ${t.homework} homework</span>` : "",
-    t.revisit ? `<span class="why why-revisit">${t.revisit} still shaky</span>` : "",
+    t.finals ? questions("final", "why-exam", `★ ${t.finals} final`) : "",
+    t.tests ? questions("short", "why-exam", `☆ ${count(t.tests, "test")}`) : "",
+    t.unclear ? panel("why-unclear", `?${t.unclear} unclear`) : "",
+    t.status === "review" ? panel("why-review", "review") : "",
+    t.homework ? questions("homework", "why-technique", `✎ ${t.homework} homework`) : "",
+    t.revisit ? panel("why-revisit", `${t.revisit} still shaky`) : "",
   ].join("");
+}
+
+const QUESTION_LABELS = { final: "★ final", short: "☆ test", homework: "✎ homework" };
+
+// The questions or tasks of one kind linked to a topic, as analyse wrote them,
+// under its row. Another chip swaps them; the same chip again closes them.
+async function toggleTopicQuestions(topicId, kind, chip) {
+  const row = chip.closest("[data-topic-row]");
+  const existing = document.getElementById(`fq-${topicId}`);
+  existing?.remove();
+  if (existing?.dataset.kind === kind) return;
+
+  const questions = (await fetch(`/topics/${topicId}/questions`).then(r => r.json()))
+    .filter(q => q.kind === kind);
+  const slot = document.createElement("div");
+  slot.className = "focus-questions";
+  slot.id = `fq-${topicId}`;
+  slot.dataset.kind = kind;
+  slot.innerHTML = questions.map(q => {
+    sourceNames[q.source_id] = q.filename;
+    return `
+      <div class="fq">
+        <div class="fq-head">
+          <span class="why ${kind === "homework" ? "why-technique" : "why-exam"}">${QUESTION_LABELS[kind]}</span>
+          <span>${escapeHtml(fileTitle(q.filename))} · ${kind === "homework" ? "T" : "Q"}${escapeHtml(q.number ?? "?")}</span>
+          ${q.page ? `<button class="icon-btn" title="the original page in the PDF" onclick="openPdf(${q.source_id}, ${q.page})">⎙</button>` : ""}
+        </div>
+        <div class="rich fq-text">${renderAnswer(q.text)}</div>
+      </div>`;
+  }).join("") || `<p class="empty">nothing linked any more</p>`;
+
+  // After the topic's panel when it is open, so a click on the title still closes the panel.
+  const panel = document.getElementById(`panel-${topicId}`);
+  (panel?.previousElementSibling === row ? panel : row).insertAdjacentElement("afterend", slot);
+  renderMath(slot);
 }
 
 // Blocks folded in Focus; they all start unfolded and a fold is remembered.
@@ -2172,7 +2223,7 @@ async function loadFocus(subjectId) {
       <span class="focus-rank">${rank ?? ""}</span>
       <span class="dot dot-${t.status}" title="${t.status}" onclick="cycleStatus(${t.id}, '${t.status}', ${blockId})"></span>
       <span class="topic-title" id="title-${t.id}" onclick="togglePanel(${t.id}, ${blockId}, this)">${escapeHtml(t.title)}</span>
-      <span class="focus-why" title="priority ${t.priority}">${focusReasons(t)}</span>
+      <span class="focus-why" title="priority ${t.priority}">${focusReasons(t, blockId)}</span>
     </div>`;
 
   target.innerHTML = blocks.map(b => {
